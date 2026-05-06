@@ -1,0 +1,165 @@
+"""
+Database Models for Z-BOT Signal Server
+Uses SQLAlchemy with PostgreSQL (Free on Render)
+"""
+
+from sqlalchemy import create_engine, Column, String, Integer, Boolean, DateTime, ForeignKey, Text
+from sqlalchemy.orm import declarative_base, relationship, sessionmaker
+from datetime import datetime
+import uuid
+
+Base = declarative_base()
+
+
+class User(Base):
+    """User model - providers and subscribers"""
+    __tablename__ = 'users'
+    
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    email = Column(String, unique=True, nullable=False, index=True)
+    name = Column(String, nullable=False)
+    access_token = Column(String, unique=True, nullable=False, index=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    # Relationships
+    providers = relationship('Provider', back_populates='owner')
+    subscriptions = relationship('Subscription', back_populates='user')
+    subscription_requests = relationship('SubscriptionRequest', back_populates='user')
+
+
+class Provider(Base):
+    """Signal Provider model"""
+    __tablename__ = 'providers'
+    
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    owner_id = Column(String, ForeignKey('users.id'), nullable=False)
+    name = Column(String, nullable=False, index=True)
+    membership_value = Column(String, default='Free')
+    observations = Column(Text, default='')
+    is_active = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    # Relationships
+    owner = relationship('User', back_populates='providers')
+    subscriptions = relationship('Subscription', back_populates='provider')
+    subscription_requests = relationship('SubscriptionRequest', back_populates='provider')
+    signals = relationship('Signal', back_populates='provider')
+    
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'name': self.name,
+            'membership_value': self.membership_value,
+            'observations': self.observations,
+            'is_active': self.is_active,
+            'created_at': self.created_at.isoformat(),
+            'updated_at': self.updated_at.isoformat(),
+            'owner_email': self.owner.email if self.owner else None
+        }
+
+
+class Subscription(Base):
+    """Active subscription model"""
+    __tablename__ = 'subscriptions'
+    
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    user_id = Column(String, ForeignKey('users.id'), nullable=False)
+    provider_id = Column(String, ForeignKey('providers.id'), nullable=False)
+    contact = Column(String, nullable=False)
+    is_active = Column(Boolean, default=True)
+    real_access = Column(Boolean, default=False)
+    demo_access = Column(Boolean, default=True)
+    expires_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    # Relationships
+    user = relationship('User', back_populates='subscriptions')
+    provider = relationship('Provider', back_populates='subscriptions')
+    
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'user_id': self.user_id,
+            'provider_id': self.provider_id,
+            'contact': self.contact,
+            'is_active': self.is_active,
+            'real_access': self.real_access,
+            'demo_access': self.demo_access,
+            'expires_at': self.expires_at.isoformat() if self.expires_at else None,
+            'created_at': self.created_at.isoformat()
+        }
+
+
+class SubscriptionRequest(Base):
+    """Subscription request model"""
+    __tablename__ = 'subscription_requests'
+    
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    user_id = Column(String, ForeignKey('users.id'), nullable=False)
+    provider_id = Column(String, ForeignKey('providers.id'), nullable=False)
+    contact = Column(String, nullable=False)
+    status = Column(String, default='pending')  # pending, approved, rejected
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    # Relationships
+    user = relationship('User', back_populates='subscription_requests')
+    provider = relationship('Provider', back_populates='subscription_requests')
+    
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'user_id': self.user_id,
+            'provider_id': self.provider_id,
+            'contact': self.contact,
+            'status': self.status,
+            'user_email': self.user.email if self.user else None,
+            'created_at': self.created_at.isoformat()
+        }
+
+
+class Signal(Base):
+    """Signal history model"""
+    __tablename__ = 'signals'
+    
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    provider_id = Column(String, ForeignKey('providers.id'), nullable=False)
+    asset = Column(String, nullable=False)
+    direction = Column(String, nullable=False)  # CALL or PUT
+    duration = Column(Integer, nullable=False)  # minutes
+    brokers = Column(String, default='')  # JSON string
+    timestamp = Column(DateTime, default=datetime.utcnow)
+    
+    # Relationship
+    provider = relationship('Provider', back_populates='signals')
+    
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'provider_id': self.provider_id,
+            'asset': self.asset,
+            'direction': self.direction,
+            'duration': self.duration,
+            'brokers': self.brokers,
+            'timestamp': self.timestamp.isoformat()
+        }
+
+
+# Database setup
+def get_db_engine(database_url):
+    """Create database engine"""
+    return create_engine(database_url)
+
+
+def get_db_session(engine):
+    """Create database session"""
+    Session = sessionmaker(bind=engine)
+    return Session()
+
+
+def init_db(engine):
+    """Create all tables"""
+    Base.metadata.create_all(engine)
