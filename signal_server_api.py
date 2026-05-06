@@ -97,11 +97,8 @@ if not DATABASE_URL:
 engine = get_db_engine(DATABASE_URL)
 init_db(engine)
 
-from contextlib import asynccontextmanager
-
-@asynccontextmanager
-async def get_db():
-    """Database session dependency - async version for Python 3.14+"""
+def get_db():
+    """Database session dependency for FastAPI (sync generator)"""
     db = get_db_session(engine)
     try:
         yield db
@@ -712,13 +709,16 @@ async def subscriber_websocket(websocket: WebSocket):
 # ============================================================
 
 @app.get("/health")
-async def health_check(db: Session = Depends(get_db)):
+async def health_check():
     """Health check endpoint"""
     from sqlalchemy import text
     try:
+        db = get_db_session(engine)
         db.execute(text("SELECT 1"))
         db_status = "connected"
-    except:
+        db.close()
+    except Exception as e:
+        logger.error(f"Database health check failed: {e}")
         db_status = "disconnected"
     
     return {
