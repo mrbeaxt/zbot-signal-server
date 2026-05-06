@@ -1,6 +1,6 @@
-fastapi==0.115.6
-uvicorn==0.34.0
-websockets==14.1
-sqlalchemy==2.0.36
-psycopg2-binary==2.9.10
-pydantic==2.10.4
+fastapi>=0.115.0
+uvicorn>=0.32.0
+websockets>=14.0
+sqlalchemy>=2.0.35
+psycopg2-binary>=2.9.9
+pydantic>=2.9.0
