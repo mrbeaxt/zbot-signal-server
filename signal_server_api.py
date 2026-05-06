@@ -16,7 +16,6 @@ import logging
 import os
 from datetime import datetime
 from typing import Optional, Dict, Set
-from contextlib import contextmanager
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Header, Depends
 from fastapi.middleware.cors import CORSMiddleware
@@ -98,9 +97,11 @@ if not DATABASE_URL:
 engine = get_db_engine(DATABASE_URL)
 init_db(engine)
 
-@contextmanager
-def get_db():
-    """Database session dependency"""
+from contextlib import asynccontextmanager
+
+@asynccontextmanager
+async def get_db():
+    """Database session dependency - async version for Python 3.14+"""
     db = get_db_session(engine)
     try:
         yield db
