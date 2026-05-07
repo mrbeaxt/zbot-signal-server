@@ -153,9 +153,12 @@ async def register_user(email: str, name: str, db: Session = Depends(get_db)):
     """Register a new user and return access token"""
     import uuid
     
+    logger.info(f"Registration request: email={email}, name={name}")
+    
     # Check if user exists
     existing_user = db.query(User).filter(User.email == email).first()
     if existing_user:
+        logger.info(f"User already exists: {email}")
         return {
             "status": "success",
             "user_id": existing_user.id,
