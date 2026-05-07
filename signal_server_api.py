@@ -82,10 +82,10 @@ logger = logging.getLogger(__name__)
 # ============================================================
 
 class WebSocketManager:
-    """Manage WebSocket connections"""
+    """Manage WebSocket connections with per-provider routing"""
     def __init__(self):
         self.provider_connections: Dict[str, Set[WebSocket]] = {}
-        self.subscriber_connections: Set[WebSocket] = set()
+        self.subscriber_connections: Dict[WebSocket, Set[str]] = {}  # ws -> {provider_ids}
     
     async def connect_provider(self, websocket: WebSocket, provider_id: str):
         await websocket.accept()
@@ -96,7 +96,7 @@ class WebSocketManager:
     
     async def connect_subscriber(self, websocket: WebSocket):
         await websocket.accept()
-        self.subscriber_connections.add(websocket)
+        self.subscriber_connections[websocket] = set()
         logger.info("Subscriber connected")
     
     def disconnect_provider(self, websocket: WebSocket, provider_id: str):
@@ -107,20 +107,34 @@ class WebSocketManager:
         logger.info(f"Provider {provider_id} disconnected")
     
     def disconnect_subscriber(self, websocket: WebSocket):
-        self.subscriber_connections.discard(websocket)
+        if websocket in self.subscriber_connections:
+            del self.subscriber_connections[websocket]
         logger.info("Subscriber disconnected")
     
-    async def broadcast_to_subscribers(self, message: str):
-        """Send signal to all subscribers"""
-        disconnected = set()
-        for subscriber in self.subscriber_connections:
-            try:
-                await subscriber.send_text(message)
-            except:
-                disconnected.add(subscriber)
-        
+    def join_provider(self, websocket: WebSocket, provider_id: str):
+        """Subscriber joins a provider to receive its signals"""
+        if websocket in self.subscriber_connections:
+            self.subscriber_connections[websocket].add(provider_id)
+        logger.info(f"Subscriber joined provider {provider_id}")
+    
+    def leave_provider(self, websocket: WebSocket, provider_id: str):
+        """Subscriber leaves a provider"""
+        if websocket in self.subscriber_connections:
+            self.subscriber_connections[websocket].discard(provider_id)
+        logger.info(f"Subscriber left provider {provider_id}")
+    
+    async def broadcast_to_provider_subscribers(self, provider_id: str, message: str):
+        """Send signal only to subscribers of a specific provider"""
+        disconnected = []
+        for subscriber_ws, provider_ids in self.subscriber_connections.items():
+            if provider_id in provider_ids:
+                try:
+                    await subscriber_ws.send_text(message)
+                except:
+                    disconnected.append(subscriber_ws)
         # Clean up disconnected subscribers
-        self.subscriber_connections -= disconnected
+        for ws in disconnected:
+            self.disconnect_subscriber(ws)
         if disconnected:
             logger.info(f"Cleaned up {len(disconnected)} disconnected subscribers")
 
@@ -679,6 +693,30 @@ async def set_subscription_expiration(
 
 
 # ============================================================
+# SIGNAL HISTORY ENDPOINTS
+# ============================================================
+
+@app.get("/api/v1/signals/{provider_id}")
+async def get_signal_history(
+    provider_id: str,
+    limit: int = 50,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Get recent signal history for a provider"""
+    signals = db.query(Signal).filter(
+        Signal.provider_id == provider_id
+    ).order_by(Signal.timestamp.desc()).limit(limit).all()
+    
+    return {
+        "status": "success",
+        "providerId": provider_id,
+        "signals": [s.to_dict() for s in signals],
+        "count": len(signals)
+    }
+
+
+# ============================================================
 # WEBSOCKET ENDPOINTS
 # ============================================================
 
@@ -702,21 +740,31 @@ async def provider_websocket(websocket: WebSocket, provider_id: str):
             if message.get("action") == "sendSignal":
                 signal_data = message.get("data", {})
                 
-                # Broadcast to all subscribers
-                await ws_manager.broadcast_to_subscribers(json.dumps({
-                    "action": "signal",
-                    "provider_id": provider_id,
-                    "data": signal_data
-                }))
+                # Broadcast to subscribers of THIS provider only
+                await ws_manager.broadcast_to_provider_subscribers(
+                    provider_id,
+                    json.dumps({
+                        "action": "signal",
+                        "provider_id": provider_id,
+                        "data": signal_data
+                    })
+                )
                 
                 logger.info(f"Signal from provider {provider_id}: {signal_data}")
                 
                 # Save signal to database
                 try:
                     db = get_db_session(engine)
+                    asset = signal_data.get('asset', 'UNKNOWN')
+                    direction = signal_data.get('direction', 'UNKNOWN')
+                    duration = int(signal_data.get('duration', 0))
+                    brokers = json.dumps(signal_data.get('brokers', []))
                     signal = Signal(
                         provider_id=provider_id,
-                        signal_data=signal_data,
+                        asset=asset,
+                        direction=direction,
+                        duration=duration,
+                        brokers=brokers,
                         timestamp=datetime.utcnow()
                     )
                     db.add(signal)
@@ -744,10 +792,33 @@ async def subscriber_websocket(websocket: WebSocket):
             "message": "Successfully connected as subscriber"
         })
         
-        # Keep connection alive
+        # Listen for commands from subscriber
         while True:
-            # Wait for messages (subscriber can send ping/pong)
-            await websocket.receive_text()
+            data = await websocket.receive_text()
+            message = json.loads(data)
+            
+            if message.get("action") == "joinProvider":
+                provider_id = message.get("providerId")
+                if provider_id:
+                    ws_manager.join_provider(websocket, provider_id)
+                    await websocket.send_json({
+                        "action": "joinedProvider",
+                        "providerId": provider_id,
+                        "message": f"Joined provider {provider_id}"
+                    })
+            
+            elif message.get("action") == "leaveProvider":
+                provider_id = message.get("providerId")
+                if provider_id:
+                    ws_manager.leave_provider(websocket, provider_id)
+                    await websocket.send_json({
+                        "action": "leftProvider",
+                        "providerId": provider_id,
+                        "message": f"Left provider {provider_id}"
+                    })
+            
+            elif message.get("action") == "ping":
+                await websocket.send_json({"action": "pong"})
     
     except WebSocketDisconnect:
         ws_manager.disconnect_subscriber(websocket)
