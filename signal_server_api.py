@@ -819,6 +819,44 @@ async def subscriber_websocket(websocket: WebSocket):
             
             elif message.get("action") == "ping":
                 await websocket.send_json({"action": "pong"})
+            
+            elif message.get("action") == "sendSignal":
+                provider_id = message.get("providerId")
+                signal_data = message.get("data", {})
+                
+                if provider_id and signal_data:
+                    # Broadcast to all subscribers of this provider
+                    await ws_manager.broadcast_to_provider_subscribers(
+                        provider_id,
+                        json.dumps({
+                            "action": "sendSignal",
+                            "providerId": provider_id,
+                            "data": signal_data
+                        })
+                    )
+                    
+                    logger.info(f"Signal relayed from subscriber WebSocket: provider={provider_id}, asset={signal_data.get('asset')}")
+                    
+                    # Save signal to database
+                    try:
+                        db = get_db_session(engine)
+                        asset = signal_data.get('asset', 'UNKNOWN')
+                        direction = signal_data.get('direction', 'UNKNOWN')
+                        duration = int(signal_data.get('duration', 0))
+                        brokers = json.dumps(signal_data.get('brokers', []))
+                        signal = Signal(
+                            provider_id=provider_id,
+                            asset=asset,
+                            direction=direction,
+                            duration=duration,
+                            brokers=brokers,
+                            timestamp=datetime.utcnow()
+                        )
+                        db.add(signal)
+                        db.commit()
+                        db.close()
+                    except Exception as e:
+                        logger.error(f"Error saving signal: {e}")
     
     except WebSocketDisconnect:
         ws_manager.disconnect_subscriber(websocket)
