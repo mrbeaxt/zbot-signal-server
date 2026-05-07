@@ -744,8 +744,8 @@ async def provider_websocket(websocket: WebSocket, provider_id: str):
                 await ws_manager.broadcast_to_provider_subscribers(
                     provider_id,
                     json.dumps({
-                        "action": "signal",
-                        "provider_id": provider_id,
+                        "action": "sendSignal",
+                        "providerId": provider_id,
                         "data": signal_data
                     })
                 )
