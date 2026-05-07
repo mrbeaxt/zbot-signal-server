@@ -89,7 +89,9 @@ class Subscription(Base):
             'real_access': self.real_access,
             'demo_access': self.demo_access,
             'expires_at': self.expires_at.isoformat() if self.expires_at else None,
-            'created_at': self.created_at.isoformat()
+            'created_at': self.created_at.isoformat(),
+            'user_email': self.user.email if self.user else None,
+            'user_name': self.user.name if self.user else None
         }
 
 
