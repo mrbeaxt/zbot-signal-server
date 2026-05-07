@@ -15,13 +15,14 @@ import json
 import logging
 import os
 from datetime import datetime
-from typing import Optional, Dict, Set
+from typing import Optional, Dict, Set, List
 from pathlib import Path
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Header, Depends
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Header, Depends, Query, Body
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 import uvicorn
 
@@ -29,6 +30,45 @@ from signal_server_models import (
     Base, User, Provider, Subscription, SubscriptionRequest, Signal,
     get_db_engine, get_db_session, init_db
 )
+
+
+# ============================================================
+# PYDANTIC REQUEST MODELS
+# ============================================================
+
+class RegisterRequest(BaseModel):
+    email: str
+    name: str
+
+
+class ProviderCreateRequest(BaseModel):
+    name: str
+    membership_value: str = "Free"
+    observations: str = ""
+
+
+class ProviderUpdateRequest(BaseModel):
+    name: Optional[str] = None
+    membership_value: Optional[str] = None
+    observations: Optional[str] = None
+
+
+class SubscriptionRequestCreate(BaseModel):
+    email: str
+    contact: str
+
+
+class SubscriptionApproveRequest(BaseModel):
+    real_access: bool = False
+    demo_access: bool = True
+
+
+class SetExpirationRequest(BaseModel):
+    expires_at: datetime
+
+
+class TokenAuthRequest(BaseModel):
+    token: str
 
 # Setup logging
 logging.basicConfig(
@@ -149,16 +189,28 @@ def get_current_user(authorization: Optional[str] = Header(None), db: Session = 
 # ============================================================
 
 @app.post("/api/v1/auth/register")
-async def register_user(email: str, name: str, db: Session = Depends(get_db)):
-    """Register a new user and return access token"""
+async def register_user(
+    email: Optional[str] = Query(None),
+    name: Optional[str] = Query(None),
+    body: Optional[RegisterRequest] = Body(None),
+    db: Session = Depends(get_db)
+):
+    """Register a new user and return access token (supports both query params and JSON body)"""
     import uuid
     
-    logger.info(f"Registration request: email={email}, name={name}")
+    # Accept data from either query params or JSON body
+    user_email = email or (body.email if body else None)
+    user_name = name or (body.name if body else None)
+    
+    if not user_email or not user_name:
+        raise HTTPException(status_code=400, detail="Email and name are required")
+    
+    logger.info(f"Registration request: email={user_email}, name={user_name}")
     
     # Check if user exists
-    existing_user = db.query(User).filter(User.email == email).first()
+    existing_user = db.query(User).filter(User.email == user_email).first()
     if existing_user:
-        logger.info(f"User already exists: {email}")
+        logger.info(f"User already exists: {user_email}")
         return {
             "status": "success",
             "user_id": existing_user.id,
@@ -169,8 +221,8 @@ async def register_user(email: str, name: str, db: Session = Depends(get_db)):
     # Create new user
     new_user = User(
         id=str(uuid.uuid4()),
-        email=email,
-        name=name,
+        email=user_email,
+        name=user_name,
         access_token=str(uuid.uuid4())
     )
     
@@ -178,7 +230,7 @@ async def register_user(email: str, name: str, db: Session = Depends(get_db)):
     db.commit()
     db.refresh(new_user)
     
-    logger.info(f"✅ New user registered: {email}")
+    logger.info(f"✅ New user registered: {user_email}")
     
     return {
         "status": "success",
@@ -208,9 +260,7 @@ async def get_user_info(current_user: User = Depends(get_current_user)):
 
 @app.post("/api/v1/providers")
 async def create_provider(
-    name: str,
-    membership_value: str = "Free",
-    observations: str = "",
+    body: ProviderCreateRequest,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
@@ -220,16 +270,16 @@ async def create_provider(
     provider = Provider(
         id=str(uuid.uuid4()),
         owner_id=current_user.id,
-        name=name,
-        membership_value=membership_value,
-        observations=observations
+        name=body.name,
+        membership_value=body.membership_value,
+        observations=body.observations
     )
     
     db.add(provider)
     db.commit()
     db.refresh(provider)
     
-    logger.info(f"✅ Provider created: {name} by {current_user.email}")
+    logger.info(f"✅ Provider created: {body.name} by {current_user.email}")
     
     return {
         "status": "success",
@@ -304,9 +354,7 @@ async def list_providers(
 @app.put("/api/v1/providers/{provider_id}")
 async def update_provider(
     provider_id: str,
-    name: Optional[str] = None,
-    membership_value: Optional[str] = None,
-    observations: Optional[str] = None,
+    body: ProviderUpdateRequest,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
@@ -319,12 +367,12 @@ async def update_provider(
     if not provider:
         raise HTTPException(status_code=404, detail="Provider not found")
     
-    if name:
-        provider.name = name
-    if membership_value:
-        provider.membership_value = membership_value
-    if observations:
-        provider.observations = observations
+    if body.name:
+        provider.name = body.name
+    if body.membership_value:
+        provider.membership_value = body.membership_value
+    if body.observations:
+        provider.observations = body.observations
     
     db.commit()
     db.refresh(provider)
@@ -370,8 +418,7 @@ async def delete_provider(
 @app.post("/api/v1/providers/{provider_id}/requests")
 async def request_subscription(
     provider_id: str,
-    email: str,
-    contact: str,
+    body: SubscriptionRequestCreate,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
@@ -401,7 +448,7 @@ async def request_subscription(
         id=str(uuid.uuid4()),
         user_id=current_user.id,
         provider_id=provider_id,
-        contact=contact,
+        contact=body.contact,
         status='pending'
     )
     
@@ -448,8 +495,7 @@ async def get_subscription_requests(
 async def approve_subscription_request(
     provider_id: str,
     request_id: str,
-    real_access: bool = False,
-    demo_access: bool = True,
+    body: SubscriptionApproveRequest = SubscriptionApproveRequest(),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
@@ -484,8 +530,8 @@ async def approve_subscription_request(
         user_id=request.user_id,
         provider_id=provider_id,
         contact=request.contact,
-        real_access=real_access,
-        demo_access=demo_access,
+        real_access=body.real_access,
+        demo_access=body.demo_access,
         expires_at=datetime.utcnow() + timedelta(days=30)  # Default 30 days
     )
     
@@ -599,7 +645,7 @@ async def unsubscribe(
 async def set_subscription_expiration(
     provider_id: str,
     subscription_id: str,
-    expires_at: datetime,
+    body: SetExpirationRequest,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
@@ -620,15 +666,15 @@ async def set_subscription_expiration(
     if not subscription:
         raise HTTPException(status_code=404, detail="Subscription not found")
     
-    subscription.expires_at = expires_at
+    subscription.expires_at = body.expires_at
     db.commit()
     
-    logger.info(f"⏰ Expiration set for subscription {subscription_id}: {expires_at}")
+    logger.info(f"⏰ Expiration set for subscription {subscription_id}: {body.expires_at}")
     
     return {
         "status": "success",
         "message": "Expiration date updated",
-        "expires_at": expires_at.isoformat()
+        "expires_at": body.expires_at.isoformat()
     }
 
 
