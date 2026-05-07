@@ -16,9 +16,12 @@ import logging
 import os
 from datetime import datetime
 from typing import Optional, Dict, Set
+from pathlib import Path
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Header, Depends
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 import uvicorn
 
@@ -730,11 +733,15 @@ async def health_check():
 
 @app.get("/")
 async def root():
-    """Root endpoint"""
+    """Serve web panel"""
+    panel_path = Path(__file__).parent / "web_panel" / "index.html"
+    if panel_path.exists():
+        return FileResponse(str(panel_path))
     return {
         "message": "Z-BOT Signal Server with Database",
         "version": "2.0.0",
-        "docs": "/docs"
+        "docs": "/docs",
+        "panel": "/"
     }
 
 
