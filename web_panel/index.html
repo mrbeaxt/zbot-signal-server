@@ -3,265 +3,739 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Z-BOT Copy Trading Panel</title>
+    <title>Z-BOT | Professional Copy Trading</title>
     <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
+        :root {
+            --bg: #0f0f1a;
+            --surface: #1a1a2e;
+            --surface2: #222240;
+            --border: #2a2a4a;
+            --primary: #667eea;
+            --primary2: #764ba2;
+            --text: #e0e0f0;
+            --text2: #8888aa;
+            --success: #00c853;
+            --danger: #ff4757;
+            --warning: #ffa502;
+            --info: #1e90ff;
+            --radius: 12px;
+            --shadow: 0 8px 32px rgba(0,0,0,0.3);
         }
-
+        * { margin: 0; padding: 0; box-sizing: border-box; }
         body {
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+            background: var(--bg);
+            color: var(--text);
             min-height: 100vh;
+            line-height: 1.6;
+        }
+        /* Header */
+        .header {
+            background: var(--surface);
+            border-bottom: 1px solid var(--border);
+            padding: 0 24px;
+            height: 64px;
             display: flex;
-            justify-content: center;
             align-items: center;
+            justify-content: space-between;
+            position: sticky;
+            top: 0;
+            z-index: 100;
+        }
+        .header .brand {
+            font-size: 22px;
+            font-weight: 800;
+            background: linear-gradient(135deg, var(--primary), var(--primary2));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+        .header .user-info {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+        .header .user-badge {
+            background: var(--surface2);
+            padding: 6px 14px;
+            border-radius: 20px;
+            font-size: 13px;
+            color: var(--text2);
+        }
+        /* Layout */
+        .app-layout {
+            display: flex;
+            min-height: calc(100vh - 64px);
+        }
+        .sidebar {
+            width: 240px;
+            background: var(--surface);
+            border-right: 1px solid var(--border);
+            padding: 16px 12px;
+            flex-shrink: 0;
+        }
+        .sidebar .nav-item {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 12px 16px;
+            border-radius: var(--radius);
+            cursor: pointer;
+            margin-bottom: 4px;
+            transition: all 0.2s;
+            font-size: 14px;
+            color: var(--text2);
+            border: none;
+            background: none;
+            width: 100%;
+            text-align: left;
+        }
+        .sidebar .nav-item:hover { background: var(--surface2); color: var(--text); }
+        .sidebar .nav-item.active { background: linear-gradient(135deg, var(--primary), var(--primary2)); color: #fff; font-weight: 600; }
+        .sidebar .nav-icon { font-size: 18px; width: 22px; text-align: center; }
+        .sidebar .nav-divider { border-top: 1px solid var(--border); margin: 12px 0; }
+        .main-content {
+            flex: 1;
+            padding: 24px;
+            overflow-y: auto;
+            max-height: calc(100vh - 64px);
+        }
+        /* Cards */
+        .card {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            padding: 24px;
+            margin-bottom: 20px;
+            box-shadow: var(--shadow);
+        }
+        .card-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 16px;
+        }
+        .card-title { font-size: 18px; font-weight: 700; color: var(--text); }
+        /* Stats grid */
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+            gap: 16px;
+            margin-bottom: 24px;
+        }
+        .stat-card {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
             padding: 20px;
         }
-
-        .container {
-            background: white;
-            border-radius: 20px;
-            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
-            max-width: 500px;
+        .stat-card .stat-value { font-size: 32px; font-weight: 800; color: var(--primary); }
+        .stat-card .stat-label { font-size: 13px; color: var(--text2); margin-top: 4px; }
+        /* Forms */
+        .form-group { margin-bottom: 16px; }
+        .form-group label { display: block; margin-bottom: 6px; font-size: 13px; font-weight: 600; color: var(--text2); text-transform: uppercase; letter-spacing: 0.5px; }
+        .form-group input, .form-group textarea, .form-group select {
             width: 100%;
-            padding: 40px;
+            padding: 10px 14px;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            font-size: 14px;
+            background: var(--bg);
+            color: var(--text);
+            transition: border-color 0.2s;
+            font-family: inherit;
         }
-
-        .logo {
-            text-align: center;
-            margin-bottom: 30px;
-        }
-
-        .logo h1 {
-            color: #667eea;
-            font-size: 32px;
-            font-weight: 700;
-        }
-
-        .logo p {
-            color: #666;
-            margin-top: 5px;
-        }
-
-        .form-group {
-            margin-bottom: 20px;
-        }
-
-        label {
-            display: block;
-            margin-bottom: 8px;
-            color: #333;
-            font-weight: 600;
-        }
-
-        input {
-            width: 100%;
-            padding: 12px 15px;
-            border: 2px solid #e0e0e0;
-            border-radius: 10px;
-            font-size: 16px;
-            transition: all 0.3s;
-        }
-
-        input:focus {
-            outline: none;
-            border-color: #667eea;
-            box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
-        }
-
-        button {
-            width: 100%;
-            padding: 14px;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
+        .form-group input:focus, .form-group textarea:focus { outline: none; border-color: var(--primary); }
+        .form-group textarea { min-height: 80px; resize: vertical; }
+        /* Buttons */
+        .btn {
+            padding: 10px 20px;
             border: none;
-            border-radius: 10px;
-            font-size: 16px;
+            border-radius: 8px;
+            font-size: 14px;
             font-weight: 600;
             cursor: pointer;
-            transition: transform 0.2s;
+            transition: all 0.2s;
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
         }
-
-        button:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 5px 20px rgba(102, 126, 234, 0.4);
+        .btn-primary { background: linear-gradient(135deg, var(--primary), var(--primary2)); color: #fff; }
+        .btn-primary:hover { transform: translateY(-1px); box-shadow: 0 4px 16px rgba(102,126,234,0.4); }
+        .btn-success { background: var(--success); color: #fff; }
+        .btn-danger { background: var(--danger); color: #fff; }
+        .btn-warning { background: var(--warning); color: #000; }
+        .btn-info { background: var(--info); color: #fff; }
+        .btn-outline { background: transparent; border: 1px solid var(--border); color: var(--text); }
+        .btn-outline:hover { background: var(--surface2); }
+        .btn-sm { padding: 6px 12px; font-size: 12px; border-radius: 6px; }
+        .btn-xs { padding: 4px 10px; font-size: 11px; border-radius: 5px; }
+        .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+        /* Tables */
+        .table-wrap { overflow-x: auto; }
+        table { width: 100%; border-collapse: collapse; }
+        th { text-align: left; padding: 12px 14px; font-size: 11px; font-weight: 700; color: var(--text2); text-transform: uppercase; letter-spacing: 0.5px; border-bottom: 2px solid var(--border); white-space: nowrap; }
+        td { padding: 10px 14px; border-bottom: 1px solid var(--border); font-size: 13px; white-space: nowrap; }
+        tr:hover { background: var(--surface2); }
+        /* Badges */
+        .badge {
+            display: inline-block;
+            padding: 3px 10px;
+            border-radius: 12px;
+            font-size: 11px;
+            font-weight: 600;
         }
-
-        button:active {
-            transform: translateY(0);
+        .badge-success { background: rgba(0,200,83,0.15); color: var(--success); }
+        .badge-danger { background: rgba(255,71,87,0.15); color: var(--danger); }
+        .badge-warning { background: rgba(255,165,2,0.15); color: var(--warning); }
+        .badge-info { background: rgba(30,144,255,0.15); color: var(--info); }
+        .badge-purple { background: rgba(102,126,234,0.15); color: var(--primary); }
+        /* Toast */
+        .toast {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            padding: 14px 24px;
+            border-radius: var(--radius);
+            color: #fff;
+            font-weight: 600;
+            z-index: 9999;
+            animation: slideIn 0.3s ease;
+            max-width: 420px;
+            box-shadow: 0 8px 32px rgba(0,0,0,0.4);
         }
-
-        .success {
-            background: #d4edda;
-            border: 1px solid #c3e6cb;
-            color: #155724;
-            padding: 15px;
-            border-radius: 10px;
-            margin-top: 20px;
-            display: none;
+        .toast-success { background: var(--success); }
+        .toast-error { background: var(--danger); }
+        .toast-info { background: var(--info); }
+        @keyframes slideIn { from { transform: translateX(100%); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
+        /* Modal */
+        .modal-overlay {
+            position: fixed;
+            inset: 0;
+            background: rgba(0,0,0,0.6);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 1000;
         }
-
-        .error {
-            background: #f8d7da;
-            border: 1px solid #f5c6cb;
-            color: #721c24;
-            padding: 15px;
-            border-radius: 10px;
-            margin-top: 20px;
-            display: none;
+        .modal {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            padding: 28px;
+            max-width: 520px;
+            width: 90%;
+            max-height: 80vh;
+            overflow-y: auto;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.5);
         }
-
-        .token-display {
-            background: #f8f9fa;
-            border: 2px solid #667eea;
-            border-radius: 10px;
-            padding: 15px;
-            margin-top: 15px;
-            word-break: break-all;
-            font-family: 'Courier New', monospace;
-            font-size: 14px;
+        .modal h3 { margin-bottom: 16px; color: var(--text); }
+        .modal-actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 20px; }
+        /* Auth page */
+        .auth-container {
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
         }
-
-        .copy-btn {
-            margin-top: 10px;
-            padding: 10px;
-            background: #28a745;
-            font-size: 14px;
+        .auth-card {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 16px;
+            padding: 40px;
+            width: 100%;
+            max-width: 440px;
+            box-shadow: var(--shadow);
+            text-align: center;
         }
-
-        .info {
-            background: #d1ecf1;
-            border: 1px solid #bee5eb;
-            color: #0c5460;
-            padding: 15px;
-            border-radius: 10px;
-            margin-top: 20px;
-            font-size: 14px;
+        .auth-card .brand { font-size: 32px; font-weight: 800; margin-bottom: 8px; }
+        .auth-card .subtitle { color: var(--text2); margin-bottom: 28px; font-size: 14px; }
+        .auth-tabs { display: flex; margin-bottom: 24px; border-radius: 8px; overflow: hidden; background: var(--surface2); }
+        .auth-tabs .tab { flex: 1; padding: 10px; border: none; background: transparent; color: var(--text2); cursor: pointer; font-weight: 600; font-size: 14px; transition: all 0.2s; }
+        .auth-tabs .tab.active { background: linear-gradient(135deg, var(--primary), var(--primary2)); color: #fff; }
+        .auth-actions { display: flex; gap: 10px; margin-top: 20px; }
+        .auth-actions .btn { flex: 1; justify-content: center; }
+        .hidden { display: none !important; }
+        .text-center { text-align: center; }
+        .mt-16 { margin-top: 16px; }
+        .mb-16 { margin-bottom: 16px; }
+        .gap-8 { gap: 8px; }
+        .flex-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+        .empty-state { text-align: center; padding: 48px 24px; color: var(--text2); }
+        .empty-state .icon { font-size: 48px; margin-bottom: 12px; opacity: 0.5; }
+        .spinner {
+            display: inline-block;
+            width: 20px; height: 20px;
+            border: 2px solid rgba(255,255,255,0.3);
+            border-top-color: #fff;
+            border-radius: 50%;
+            animation: spin 0.6s linear infinite;
         }
-
-        .hidden {
-            display: none;
-        }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        select { cursor: pointer; }
     </style>
 </head>
 <body>
-    <div class="container">
-        <div class="logo">
-            <h1>🚀 Z-BOT</h1>
-            <p>Copy Trading Panel</p>
+
+<!-- ===================== AUTH PAGE ===================== -->
+<div id="authPage" class="auth-container">
+    <div class="auth-card">
+        <div class="brand" style="background:linear-gradient(135deg,#667eea,#764ba2);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text;">🚀 Z-BOT</div>
+        <p class="subtitle">Professional Copy Trading System</p>
+        <div class="auth-tabs">
+            <button class="tab active" onclick="switchAuthTab('register')">Register</button>
+            <button class="tab" onclick="switchAuthTab('login')">Login</button>
         </div>
-
-        <!-- Registration Form -->
         <div id="registerForm">
-            <h2 style="margin-bottom: 20px; color: #333;">Create Your Account</h2>
-            
-            <div class="form-group">
-                <label for="email">Email Address</label>
-                <input type="email" id="email" placeholder="your@email.com" required>
+            <div class="form-group"><label>Email Address</label><input type="email" id="regEmail" placeholder="your@email.com"></div>
+            <div class="form-group"><label>Full Name</label><input type="text" id="regName" placeholder="John Doe"></div>
+            <button class="btn btn-primary" style="width:100%;justify-content:center;" onclick="register()">Create Account & Get Token</button>
+            <div id="regResult" class="mt-16 hidden">
+                <div style="background:var(--surface2);border:1px solid var(--primary);border-radius:8px;padding:14px;word-break:break-all;font-family:monospace;font-size:13px;margin-bottom:8px;" id="regToken"></div>
+                <div class="flex-row"><button class="btn btn-sm btn-outline" onclick="copyRegToken()">📋 Copy Token</button><button class="btn btn-sm btn-primary" onclick="loginWithRegToken()">🔓 Login with Token</button></div>
             </div>
-
-            <div class="form-group">
-                <label for="name">Full Name</label>
-                <input type="text" id="name" placeholder="John Doe" required>
-            </div>
-
-            <button onclick="register()">Create Account & Get Token</button>
-
-            <div id="successMsg" class="success">
-                ✅ Account created successfully!
-                <div class="token-display" id="tokenDisplay"></div>
-                <button class="copy-btn" onclick="copyToken()">📋 Copy Token</button>
-                <div class="info" style="margin-top: 15px;">
-                    <strong>Next Step:</strong><br>
-                    Enter this token in your Z-BOT application under Copy Trading settings.
-                </div>
-            </div>
-
-            <div id="errorMsg" class="error"></div>
+        </div>
+        <div id="loginForm" class="hidden">
+            <div class="form-group"><label>Your API Token</label><input type="text" id="loginToken" placeholder="Paste your token here..."></div>
+            <button class="btn btn-primary" style="width:100%;justify-content:center;" onclick="login()">🔓 Login to Dashboard</button>
         </div>
     </div>
+</div>
 
-    <script>
-        const API_URL = '/api/v1';
+<!-- ===================== MAIN APP ===================== -->
+<div id="appPage" class="hidden">
+    <header class="header">
+        <span class="brand">🚀 Z-BOT Copy Trading</span>
+        <div class="user-info">
+            <span class="user-badge" id="headerUser"></span>
+            <button class="btn btn-sm btn-outline" onclick="logout()">Logout</button>
+        </div>
+    </header>
+    <div class="app-layout">
+        <aside class="sidebar">
+            <button class="nav-item active" data-page="dashboard" onclick="showPage('dashboard',this)"><span class="nav-icon">📊</span> Dashboard</button>
+            <button class="nav-item" data-page="allProviders" onclick="showPage('allProviders',this)"><span class="nav-icon">🌐</span> All Providers</button>
+            <button class="nav-item" data-page="myProviders" onclick="showPage('myProviders',this)"><span class="nav-icon">⚙️</span> My Providers</button>
+            <button class="nav-item" data-page="mySubscriptions" onclick="showPage('mySubscriptions',this)"><span class="nav-icon">📡</span> My Subscriptions</button>
+            <div class="nav-divider"></div>
+            <button class="nav-item" data-page="signalHistory" onclick="showPage('signalHistory',this)"><span class="nav-icon">📜</span> Signal History</button>
+        </aside>
+        <main class="main-content" id="mainContent"></main>
+    </div>
+</div>
 
-        async function register() {
-            const email = document.getElementById('email').value.trim();
-            const name = document.getElementById('name').value.trim();
-            const successMsg = document.getElementById('successMsg');
-            const errorMsg = document.getElementById('errorMsg');
+<!-- ===================== MODAL ===================== -->
+<div id="modalOverlay" class="modal-overlay hidden" onclick="closeModal(event)">
+    <div class="modal" id="modalBox" onclick="event.stopPropagation()"></div>
+</div>
 
-            // Hide previous messages
-            successMsg.style.display = 'none';
-            errorMsg.style.display = 'none';
+<div id="toastContainer"></div>
 
-            // Validate
-            if (!email || !name) {
-                errorMsg.textContent = '❌ Please fill in all fields!';
-                errorMsg.style.display = 'block';
-                return;
-            }
+<script>
+// ===================== STATE =====================
+const API = '/api/v1';
+let authToken = localStorage.getItem('zbot_token') || '';
+let userData = null;
 
-            if (!email.includes('@')) {
-                errorMsg.textContent = '❌ Please enter a valid email!';
-                errorMsg.style.display = 'block';
-                return;
-            }
+// ===================== TOAST =====================
+function toast(msg, type='info') {
+    const el = document.createElement('div');
+    el.className = `toast toast-${type}`;
+    el.textContent = msg;
+    document.getElementById('toastContainer').appendChild(el);
+    setTimeout(() => { el.style.opacity='0'; el.style.transition='opacity 0.3s'; setTimeout(()=>el.remove(),300); }, 3500);
+}
 
-            try {
-                console.log('Registering:', email, name);
-                
-                const response = await fetch(`${API_URL}/auth/register?email=${encodeURIComponent(email)}&name=${encodeURIComponent(name)}`, {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                    },
-                });
+// ===================== API =====================
+async function api(path, method='GET', body=null) {
+    const opts = { method, headers: { 'Authorization': `Bearer ${authToken}` } };
+    if (body) { opts.headers['Content-Type'] = 'application/json'; opts.body = JSON.stringify(body); }
+    const res = await fetch(`${API}${path}`, opts);
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.detail || data.message || `Request failed (${res.status})`);
+    return data;
+}
 
-                console.log('Response status:', response.status);
-                const data = await response.json();
-                console.log('Response data:', data);
+// ===================== AUTH =====================
+function switchAuthTab(tab) {
+    document.querySelectorAll('.auth-tabs .tab').forEach(t=>t.classList.remove('active'));
+    document.querySelectorAll('.auth-tabs .tab').forEach(t=>{ if(t.textContent.toLowerCase().includes(tab)) t.classList.add('active'); });
+    document.getElementById('registerForm').classList.toggle('hidden', tab !== 'register');
+    document.getElementById('loginForm').classList.toggle('hidden', tab !== 'login');
+    document.getElementById('regResult').classList.add('hidden');
+}
 
-                if (response.ok || response.status === 200) {
-                    const token = data.access_token || data.user?.access_token;
-                    if (token) {
-                        document.getElementById('tokenDisplay').textContent = token;
-                        successMsg.style.display = 'block';
-                        
-                        // Store token in localStorage for convenience
-                        localStorage.setItem('zbot_token', token);
-                        localStorage.setItem('zbot_email', email);
-                    } else {
-                        errorMsg.textContent = '❌ No token received. Please try again.';
-                        errorMsg.style.display = 'block';
-                    }
-                } else {
-                    errorMsg.textContent = '❌ ' + (data.detail || data.message || 'Registration failed!');
-                    errorMsg.style.display = 'block';
-                }
-            } catch (error) {
-                console.error('Registration error:', error);
-                errorMsg.textContent = '❌ Network error: ' + error.message + '. Please check console (F12) for details.';
-                errorMsg.style.display = 'block';
-            }
-        }
+async function register() {
+    const email = document.getElementById('regEmail').value.trim();
+    const name = document.getElementById('regName').value.trim();
+    if (!email || !name) return toast('Please fill all fields', 'error');
+    if (!email.includes('@')) return toast('Invalid email', 'error');
+    try {
+        const data = await api('/auth/register', 'POST', { email, name });
+        const token = data.access_token;
+        document.getElementById('regToken').textContent = token;
+        document.getElementById('regResult').classList.remove('hidden');
+        localStorage.setItem('zbot_token', token);
+        localStorage.setItem('zbot_email', email);
+        toast('Account created! Copy your token below.', 'success');
+    } catch(e) { toast(e.message, 'error'); }
+}
 
-        function copyToken() {
-            const token = document.getElementById('tokenDisplay').textContent;
-            navigator.clipboard.writeText(token).then(() => {
-                alert('✅ Token copied to clipboard!');
+function copyRegToken() {
+    const token = document.getElementById('regToken').textContent;
+    navigator.clipboard.writeText(token).then(()=>toast('Token copied!','success'));
+}
+
+function loginWithRegToken() {
+    document.getElementById('loginToken').value = document.getElementById('regToken').textContent;
+    switchAuthTab('login');
+    login();
+}
+
+async function login() {
+    const token = document.getElementById('loginToken').value.trim();
+    if (!token) return toast('Please enter your token', 'error');
+    authToken = token;
+    try {
+        userData = await api('/auth/me');
+        localStorage.setItem('zbot_token', token);
+        document.getElementById('authPage').classList.add('hidden');
+        document.getElementById('appPage').classList.remove('hidden');
+        document.getElementById('headerUser').textContent = `👤 ${userData.user.name || userData.user.email}`;
+        showPage('dashboard', document.querySelector('[data-page="dashboard"]'));
+        toast(`Welcome back, ${userData.user.name}!`, 'success');
+    } catch(e) {
+        authToken = '';
+        toast('Invalid token: ' + e.message, 'error');
+    }
+}
+
+function logout() {
+    authToken = '';
+    userData = null;
+    localStorage.removeItem('zbot_token');
+    document.getElementById('authPage').classList.remove('hidden');
+    document.getElementById('appPage').classList.add('hidden');
+}
+
+// Auto-login
+if (authToken) {
+    (async () => {
+        try { userData = await api('/auth/me'); document.getElementById('authPage').classList.add('hidden'); document.getElementById('appPage').classList.remove('hidden'); document.getElementById('headerUser').textContent = `👤 ${userData.user.name || userData.user.email}`; showPage('dashboard', document.querySelector('[data-page="dashboard"]')); } catch(e) { authToken=''; localStorage.removeItem('zbot_token'); }
+    })();
+}
+
+// ===================== NAVIGATION =====================
+function showPage(page, navBtn) {
+    document.querySelectorAll('.nav-item').forEach(n=>n.classList.remove('active'));
+    if (navBtn) navBtn.classList.add('active');
+    const content = document.getElementById('mainContent');
+    switch(page) {
+        case 'dashboard': renderDashboard(content); break;
+        case 'allProviders': renderAllProviders(content); break;
+        case 'myProviders': renderMyProviders(content); break;
+        case 'mySubscriptions': renderMySubscriptions(content); break;
+        case 'signalHistory': renderSignalHistory(content); break;
+    }
+}
+
+// ===================== MODAL =====================
+function openModal(html) {
+    document.getElementById('modalBox').innerHTML = html;
+    document.getElementById('modalOverlay').classList.remove('hidden');
+}
+function closeModal(e) {
+    if (!e || e.target === document.getElementById('modalOverlay')) {
+        document.getElementById('modalOverlay').classList.add('hidden');
+    }
+}
+
+// ===================== DASHBOARD =====================
+async function renderDashboard(container) {
+    container.innerHTML = '<div class="spinner"></div> Loading...';
+    try {
+        const [providers, myProviders, mySubs] = await Promise.all([
+            api('/providers?subscribed=false&is_owner=false'),
+            api('/providers?is_owner=true'),
+            api('/providers?subscribed=true')
+        ]);
+        const allP = providers.providers || [];
+        const myP = myProviders.providers || [];
+        const myS = mySubs.providers || [];
+        container.innerHTML = `
+            <h2 style="margin-bottom:20px;">📊 Dashboard</h2>
+            <div class="stats-grid">
+                <div class="stat-card"><div class="stat-value">${allP.length}</div><div class="stat-label">Available Providers</div></div>
+                <div class="stat-card"><div class="stat-value">${myP.length}</div><div class="stat-label">My Providers</div></div>
+                <div class="stat-card"><div class="stat-value">${myS.length}</div><div class="stat-label">Active Subscriptions</div></div>
+                <div class="stat-card"><div class="stat-value">${userData?.user?.name || 'N/A'}</div><div class="stat-label">Logged in as</div></div>
+            </div>
+            <div class="card"><div class="card-header"><span class="card-title">🏠 Welcome to Z-BOT Copy Trading</span></div>
+                <p style="color:var(--text2);font-size:14px;line-height:1.8;">
+                    Navigate using the sidebar to:<br>
+                    🌐 <b>All Providers</b> — Browse and subscribe to signal providers<br>
+                    ⚙️ <b>My Providers</b> — Create and manage your own signal providers<br>
+                    📡 <b>My Subscriptions</b> — View and manage your active subscriptions<br>
+                    📜 <b>Signal History</b> — Review recent trading signals
+                </p>
+            </div>
+            ${allP.length > 0 ? `
+            <div class="card"><div class="card-header"><span class="card-title">🆕 Recent Providers</span></div>
+                <div class="table-wrap"><table><thead><tr><th>Name</th><th>Membership</th><th>Created</th><th>Action</th></tr></thead>
+                <tbody>${allP.slice(0,10).map(p=>`<tr><td><b>${esc(p.name)}</b></td><td><span class="badge badge-purple">${esc(p.membership_value||'Free')}</span></td><td>${fmtDate(p.created_at)}</td><td><button class="btn btn-sm btn-info" onclick="subscribeToProvider('${p.id}')">Subscribe</button></td></tr>`).join('')}</tbody></table></div>
+            </div>` : ''}
+        `;
+    } catch(e) { container.innerHTML = `<div class="empty-state"><div class="icon">⚠️</div><p>Error loading dashboard: ${esc(e.message)}</p></div>`; }
+}
+
+// ===================== ALL PROVIDERS =====================
+async function renderAllProviders(container) {
+    container.innerHTML = '<div class="spinner"></div> Loading providers...';
+    try {
+        const res = await api('/providers?subscribed=false&is_owner=false');
+        const providers = res.providers || [];
+        container.innerHTML = `
+            <div class="card-header" style="margin-bottom:16px;"><span class="card-title">🌐 All Signal Providers</span><button class="btn btn-sm btn-outline" onclick="renderAllProviders(document.getElementById('mainContent'))">🔄 Refresh</button></div>
+            ${providers.length === 0 ? '<div class="empty-state"><div class="icon">📭</div><p>No providers available yet.<br>Be the first to create one in My Providers!</p></div>' : `
+            <div class="table-wrap"><table><thead><tr><th>Name</th><th>Membership</th><th>Observations</th><th>Created</th><th>Status</th><th>Action</th></tr></thead>
+            <tbody>${providers.map(p=>`<tr><td><b>${esc(p.name)}</b></td><td><span class="badge badge-purple">${esc(p.membership_value||'Free')}</span></td><td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;">${esc(p.observations||'—')}</td><td>${fmtDate(p.created_at)}</td><td>${p.subscription_requested?'<span class="badge badge-warning">Pending</span>':'<span class="badge badge-info">Available</span>'}</td><td>${p.subscription_requested?'<button class="btn btn-xs btn-outline" disabled>Requested</button>':'<button class="btn btn-xs btn-info" onclick="subscribeToProvider(\''+p.id+'\')">Subscribe</button>'}</td></tr>`).join('')}</tbody></table></div>
+            `}
+        `;
+    } catch(e) { container.innerHTML = `<div class="empty-state"><div class="icon">⚠️</div><p>Error: ${esc(e.message)}</p></div>`; }
+}
+
+async function subscribeToProvider(providerId) {
+    const contact = prompt('Enter your contact info (Telegram/WhatsApp):');
+    if (!contact) return;
+    try {
+        await api(`/providers/${providerId}/requests`, 'POST', { email: userData.user.email, contact });
+        toast('Subscription request sent!', 'success');
+        renderAllProviders(document.getElementById('mainContent'));
+    } catch(e) { toast('Error: ' + e.message, 'error'); }
+}
+
+// ===================== MY PROVIDERS =====================
+async function renderMyProviders(container) {
+    container.innerHTML = '<div class="spinner"></div> Loading your providers...';
+    try {
+        const res = await api('/providers?is_owner=true');
+        const providers = res.providers || [];
+        container.innerHTML = `
+            <div class="card-header" style="margin-bottom:16px;"><span class="card-title">⚙️ My Providers</span><div class="flex-row"><button class="btn btn-sm btn-outline" onclick="renderMyProviders(document.getElementById('mainContent'))">🔄 Refresh</button><button class="btn btn-sm btn-primary" onclick="showCreateProviderModal()">＋ New Provider</button></div></div>
+            ${providers.length === 0 ? '<div class="empty-state"><div class="icon">📭</div><p>You haven\'t created any providers yet.<br>Click "New Provider" to start sharing your signals!</p></div>' : providers.map(p=>`
+            <div class="card" style="padding:16px;margin-bottom:12px;">
+                <div class="card-header"><span class="card-title">📡 ${esc(p.name)}</span><span class="badge badge-purple">${esc(p.membership_value||'Free')}</span></div>
+                <p style="color:var(--text2);font-size:13px;margin-bottom:12px;">${esc(p.observations||'No observations')}</p>
+                <div class="flex-row gap-8">
+                    <button class="btn btn-xs btn-outline" onclick="showEditProviderModal('${p.id}','${esc(p.name)}','${esc(p.membership_value||'')}','${esc(p.observations||'')}')">✏️ Edit</button>
+                    <button class="btn btn-xs btn-info" onclick="viewProviderRequests('${p.id}')">📋 Requests</button>
+                    <button class="btn btn-xs btn-success" onclick="viewProviderSubscribers('${p.id}')">👥 Subscribers</button>
+                    <button class="btn btn-xs btn-danger" onclick="deleteProvider('${p.id}')">🗑 Delete</button>
+                </div>
+            </div>`).join('')}
+        `;
+    } catch(e) { container.innerHTML = `<div class="empty-state"><div class="icon">⚠️</div><p>Error: ${esc(e.message)}</p></div>`; }
+}
+
+function showCreateProviderModal() {
+    openModal(`
+        <h3>＋ Create New Provider</h3>
+        <div class="form-group"><label>Provider Name</label><input id="cpName" placeholder="e.g., Pro Trader Signals"></div>
+        <div class="form-group"><label>Membership Value</label><input id="cpMembership" placeholder="Free" value="Free"></div>
+        <div class="form-group"><label>Observations</label><textarea id="cpObs" placeholder="Describe your trading strategy..."></textarea></div>
+        <div class="modal-actions"><button class="btn btn-outline" onclick="closeModal()">Cancel</button><button class="btn btn-primary" onclick="createProvider()">Create Provider</button></div>
+    `);
+}
+
+async function createProvider() {
+    const name = document.getElementById('cpName').value.trim();
+    const membership_value = document.getElementById('cpMembership').value.trim() || 'Free';
+    const observations = document.getElementById('cpObs').value.trim();
+    if (!name) return toast('Name is required', 'error');
+    try {
+        await api('/providers', 'POST', { name, membership_value, observations });
+        toast('Provider created!', 'success');
+        closeModal();
+        renderMyProviders(document.getElementById('mainContent'));
+    } catch(e) { toast('Error: ' + e.message, 'error'); }
+}
+
+function showEditProviderModal(id, name, membership_value, observations) {
+    openModal(`
+        <h3>✏️ Edit Provider</h3>
+        <div class="form-group"><label>Provider Name</label><input id="epName" value="${name}"></div>
+        <div class="form-group"><label>Membership Value</label><input id="epMembership" value="${membership_value}"></div>
+        <div class="form-group"><label>Observations</label><textarea id="epObs">${observations}</textarea></div>
+        <div class="modal-actions"><button class="btn btn-outline" onclick="closeModal()">Cancel</button><button class="btn btn-primary" onclick="editProvider('${id}')">Save Changes</button></div>
+    `);
+}
+
+async function editProvider(id) {
+    const body = {};
+    const name = document.getElementById('epName')?.value?.trim();
+    const membership_value = document.getElementById('epMembership')?.value?.trim();
+    const observations = document.getElementById('epObs')?.value?.trim();
+    if (name) body.name = name;
+    if (membership_value) body.membership_value = membership_value;
+    if (observations) body.observations = observations;
+    try {
+        await api(`/providers/${id}`, 'PUT', body);
+        toast('Provider updated!', 'success');
+        closeModal();
+        renderMyProviders(document.getElementById('mainContent'));
+    } catch(e) { toast('Error: ' + e.message, 'error'); }
+}
+
+async function deleteProvider(id) {
+    if (!confirm('Are you sure you want to delete this provider? This cannot be undone.')) return;
+    try {
+        await api(`/providers/${id}`, 'DELETE');
+        toast('Provider deleted!', 'success');
+        renderMyProviders(document.getElementById('mainContent'));
+    } catch(e) { toast('Error: ' + e.message, 'error'); }
+}
+
+async function viewProviderRequests(providerId) {
+    try {
+        const res = await api(`/providers/${providerId}/requests`);
+        const requests = res.requests || [];
+        let html = `<h3>📋 Subscription Requests (${requests.length})</h3>`;
+        if (requests.length === 0) {
+            html += '<p style="color:var(--text2);margin-top:12px;">No pending requests.</p>';
+        } else {
+            html += '<div style="max-height:400px;overflow-y:auto;margin-top:12px;">';
+            requests.forEach(r => {
+                html += `<div style="background:var(--surface2);padding:12px;border-radius:8px;margin-bottom:8px;"><b>${esc(r.user_email||'Unknown')}</b><br><span style="color:var(--text2);font-size:13px;">Contact: ${esc(r.contact||'N/A')}</span><div class="flex-row" style="margin-top:8px;"><button class="btn btn-xs btn-success" onclick="approveRequest('${providerId}','${r.id}')">✅ Approve</button><button class="btn btn-xs btn-danger" onclick="rejectRequest('${providerId}','${r.id}')">❌ Reject</button></div></div>`;
             });
+            html += '</div>';
         }
+        html += '<div class="modal-actions"><button class="btn btn-outline" onclick="closeModal()">Close</button></div>';
+        openModal(html);
+    } catch(e) { toast('Error: ' + e.message, 'error'); }
+}
 
-        // Auto-fill if returning user
-        window.onload = function() {
-            const savedEmail = localStorage.getItem('zbot_email');
-            if (savedEmail) {
-                document.getElementById('email').value = savedEmail;
-            }
-        };
-    </script>
+async function approveRequest(providerId, requestId) {
+    try {
+        await api(`/providers/${providerId}/requests/${requestId}/approve`, 'POST', { demo_access: true });
+        toast('Request approved!', 'success');
+        closeModal();
+        viewProviderRequests(providerId);
+    } catch(e) { toast('Error: ' + e.message, 'error'); }
+}
+
+async function rejectRequest(providerId, requestId) {
+    try {
+        await api(`/providers/${providerId}/requests/${requestId}/reject`, 'POST');
+        toast('Request rejected!', 'success');
+        closeModal();
+        viewProviderRequests(providerId);
+    } catch(e) { toast('Error: ' + e.message, 'error'); }
+}
+
+async function viewProviderSubscribers(providerId) {
+    try {
+        const res = await api(`/providers/${providerId}/subscriptions`);
+        const subs = res.subscriptions || [];
+        let html = `<h3>👥 Subscribers (${subs.length})</h3>`;
+        if (subs.length === 0) {
+            html += '<p style="color:var(--text2);margin-top:12px;">No subscribers yet.</p>';
+        } else {
+            html += '<div style="max-height:400px;overflow-y:auto;margin-top:12px;">';
+            subs.forEach(s => {
+                html += `<div style="background:var(--surface2);padding:12px;border-radius:8px;margin-bottom:8px;"><b>${esc(s.user_email||'Unknown')}</b><br><span style="color:var(--text2);font-size:13px;">Contact: ${esc(s.contact||'N/A')} | Expires: ${s.expires_at?fmtDate(s.expires_at):'Never'} | Access: ${s.real_access?'Real':'Demo'}</span><div class="flex-row" style="margin-top:8px;"><button class="btn btn-xs btn-warning" onclick="updateSubExpiry('${providerId}','${s.id}')">⏰ Set Expiry</button><button class="btn btn-xs btn-danger" onclick="removeSubscriber('${providerId}','${s.id}')">🗑 Remove</button></div></div>`;
+            });
+            html += '</div>';
+        }
+        html += '<div class="modal-actions"><button class="btn btn-outline" onclick="closeModal()">Close</button></div>';
+        openModal(html);
+    } catch(e) { toast('Error: ' + e.message, 'error'); }
+}
+
+function updateSubExpiry(providerId, subId) {
+    const date = prompt('Enter expiry date (YYYY-MM-DD):', new Date(Date.now()+30*86400000).toISOString().split('T')[0]);
+    if (!date) return;
+    (async()=>{
+        try {
+            await api(`/providers/${providerId}/subscriptions/${subId}/set-expiration`, 'POST', { expires_at: new Date(date).toISOString() });
+            toast('Expiry updated!', 'success');
+            closeModal();
+            viewProviderSubscribers(providerId);
+        } catch(e) { toast('Error: ' + e.message, 'error'); }
+    })();
+}
+
+async function removeSubscriber(providerId, subId) {
+    if (!confirm('Remove this subscriber?')) return;
+    try {
+        await api(`/providers/${providerId}/subscriptions/${subId}/unsubscribe`, 'POST');
+        toast('Subscriber removed!', 'success');
+        closeModal();
+        viewProviderSubscribers(providerId);
+    } catch(e) { toast('Error: ' + e.message, 'error'); }
+}
+
+// ===================== MY SUBSCRIPTIONS =====================
+async function renderMySubscriptions(container) {
+    container.innerHTML = '<div class="spinner"></div> Loading subscriptions...';
+    try {
+        const res = await api('/providers?subscribed=true');
+        const providers = res.providers || [];
+        container.innerHTML = `
+            <div class="card-header" style="margin-bottom:16px;"><span class="card-title">📡 My Subscriptions</span><button class="btn btn-sm btn-outline" onclick="renderMySubscriptions(document.getElementById('mainContent'))">🔄 Refresh</button></div>
+            ${providers.length === 0 ? '<div class="empty-state"><div class="icon">📭</div><p>You don\'t have any active subscriptions.<br>Browse "All Providers" to subscribe!</p></div>' : providers.map(p=>`
+            <div class="card" style="padding:16px;margin-bottom:12px;">
+                <div class="card-header"><span class="card-title">📡 ${esc(p.name)}</span><span class="badge ${p.real_access?'badge-danger':'badge-success'}">${p.real_access?'Real Account':'Demo Account'}</span></div>
+                <p style="color:var(--text2);font-size:13px;margin-bottom:8px;">Expires: ${p.expires_at?fmtDate(p.expires_at):'Never'} | Membership: ${esc(p.membership_value||'Free')}</p>
+                <button class="btn btn-xs btn-danger" onclick="unsubscribe('${p.id}','${p.subscription_id}')">🗑 Cancel Subscription</button>
+            </div>`).join('')}
+        `;
+    } catch(e) { container.innerHTML = `<div class="empty-state"><div class="icon">⚠️</div><p>Error: ${esc(e.message)}</p></div>`; }
+}
+
+async function unsubscribe(providerId, subId) {
+    if (!confirm('Are you sure you want to cancel this subscription?')) return;
+    try {
+        await api(`/providers/${providerId}/subscriptions/${subId}/unsubscribe`, 'POST');
+        toast('Subscription cancelled!', 'success');
+        renderMySubscriptions(document.getElementById('mainContent'));
+    } catch(e) { toast('Error: ' + e.message, 'error'); }
+}
+
+// ===================== SIGNAL HISTORY =====================
+async function renderSignalHistory(container) {
+    container.innerHTML = '<div class="spinner"></div> Loading signal history...';
+    try {
+        const res = await api('/providers?subscribed=true');
+        const providers = res.providers || [];
+        if (providers.length === 0) {
+            container.innerHTML = '<div class="empty-state"><div class="icon">📜</div><p>Subscribe to providers first to see signal history.</p></div>';
+            return;
+        }
+        // Get signals for first subscribed provider
+        const pid = providers[0].id;
+        const sigRes = await api(`/signals/${pid}?limit=50`);
+        const signals = sigRes.signals || [];
+        container.innerHTML = `
+            <div class="card-header" style="margin-bottom:16px;"><span class="card-title">📜 Signal History</span><button class="btn btn-sm btn-outline" onclick="renderSignalHistory(document.getElementById('mainContent'))">🔄 Refresh</button></div>
+            ${signals.length === 0 ? '<div class="empty-state"><div class="icon">📭</div><p>No signals received yet.</p></div>' : `
+            <div class="table-wrap"><table><thead><tr><th>Provider</th><th>Asset</th><th>Direction</th><th>Duration</th><th>Timestamp</th></tr></thead>
+            <tbody>${signals.map(s=>`<tr><td>${esc(providers[0].name)}</td><td><b>${esc(s.asset||s.signal_data?.asset||'N/A')}</b></td><td><span class="badge ${(s.direction||s.signal_data?.direction)==='CALL'?'badge-success':'badge-danger'}">${esc(s.direction||s.signal_data?.direction||'N/A')}</span></td><td>${esc(String(s.duration||s.signal_data?.duration||'N/A'))} min</td><td>${fmtDate(s.timestamp)}</td></tr>`).join('')}</tbody></table></div>
+            `}
+        `;
+    } catch(e) { container.innerHTML = `<div class="empty-state"><div class="icon">⚠️</div><p>Error: ${esc(e.message)}</p></div>`; }
+}
+
+// ===================== HELPERS =====================
+function esc(str) {
+    if (!str) return '';
+    return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
+function fmtDate(iso) {
+    if (!iso) return 'N/A';
+    try { return new Date(iso).toLocaleDateString('en-US',{year:'numeric',month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'}); }
+    catch(e) { return iso; }
+}
+</script>
 </body>
 </html>
