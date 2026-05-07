@@ -211,26 +211,39 @@
             }
 
             try {
+                console.log('Registering:', email, name);
+                
                 const response = await fetch(`${API_URL}/auth/register?email=${encodeURIComponent(email)}&name=${encodeURIComponent(name)}`, {
-                    method: 'POST'
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
                 });
 
+                console.log('Response status:', response.status);
                 const data = await response.json();
+                console.log('Response data:', data);
 
-                if (response.ok) {
-                    const token = data.user.access_token;
-                    document.getElementById('tokenDisplay').textContent = token;
-                    successMsg.style.display = 'block';
-                    
-                    // Store token in localStorage for convenience
-                    localStorage.setItem('zbot_token', token);
-                    localStorage.setItem('zbot_email', email);
+                if (response.ok || response.status === 200) {
+                    const token = data.access_token || data.user?.access_token;
+                    if (token) {
+                        document.getElementById('tokenDisplay').textContent = token;
+                        successMsg.style.display = 'block';
+                        
+                        // Store token in localStorage for convenience
+                        localStorage.setItem('zbot_token', token);
+                        localStorage.setItem('zbot_email', email);
+                    } else {
+                        errorMsg.textContent = '❌ No token received. Please try again.';
+                        errorMsg.style.display = 'block';
+                    }
                 } else {
-                    errorMsg.textContent = '❌ ' + (data.detail || 'Registration failed!');
+                    errorMsg.textContent = '❌ ' + (data.detail || data.message || 'Registration failed!');
                     errorMsg.style.display = 'block';
                 }
             } catch (error) {
-                errorMsg.textContent = '❌ Network error. Please try again!';
+                console.error('Registration error:', error);
+                errorMsg.textContent = '❌ Network error: ' + error.message + '. Please check console (F12) for details.';
                 errorMsg.style.display = 'block';
             }
         }
