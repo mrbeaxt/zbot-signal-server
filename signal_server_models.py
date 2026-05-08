@@ -46,6 +46,7 @@ class Provider(Base):
     subscriptions = relationship('Subscription', back_populates='provider')
     subscription_requests = relationship('SubscriptionRequest', back_populates='provider')
     signals = relationship('Signal', back_populates='provider')
+    trades = relationship('ProviderTrade', back_populates='provider')
     
     def to_dict(self):
         return {
@@ -154,6 +155,49 @@ class Signal(Base):
             'result': self.result,
             'profit': self.profit,
             'closed_at': self.closed_at.isoformat() if self.closed_at else None
+        }
+
+
+class ProviderTrade(Base):
+    """
+    Provider private trade/performance record.
+    Used for public provider stats without broadcasting signals.
+    """
+    __tablename__ = 'provider_trades'
+
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    provider_id = Column(String, ForeignKey('providers.id'), nullable=False, index=True)
+
+    asset = Column(String, nullable=False)
+    direction = Column(String, nullable=False)  # CALL/PUT
+    duration = Column(Integer, nullable=False)  # minutes
+
+    account_type = Column(String, default='Demo')  # Demo / Real
+    broker = Column(String, default='')
+    strategy = Column(String, default='')
+
+    opened_at = Column(DateTime, nullable=True)
+    closed_at = Column(DateTime, default=datetime.utcnow)
+
+    result = Column(String, nullable=False)  # WIN/LOSS/DRAW
+    profit = Column(Float, nullable=True)
+
+    provider = relationship('Provider', back_populates='trades')
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'provider_id': self.provider_id,
+            'asset': self.asset,
+            'direction': self.direction,
+            'duration': self.duration,
+            'account_type': self.account_type,
+            'broker': self.broker,
+            'strategy': self.strategy,
+            'opened_at': self.opened_at.isoformat() if self.opened_at else None,
+            'closed_at': self.closed_at.isoformat() if self.closed_at else None,
+            'result': self.result,
+            'profit': self.profit,
         }
 
 
