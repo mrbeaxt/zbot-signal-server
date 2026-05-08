@@ -24,6 +24,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
+from sqlalchemy import func, case
 import uvicorn
 
 from signal_server_models import (
@@ -69,6 +70,12 @@ class SetExpirationRequest(BaseModel):
 
 class TokenAuthRequest(BaseModel):
     token: str
+
+
+class SignalResultReportRequest(BaseModel):
+    result: str = Field(..., description="WIN / LOSS / DRAW")
+    profit: Optional[float] = Field(None, description="Net profit (negative for loss)")
+    closed_at: Optional[datetime] = None
 
 # Setup logging
 logging.basicConfig(
@@ -328,11 +335,47 @@ async def list_providers(
     query = query.filter(Provider.is_active == True)
     
     providers = query.all()
+
+    # --- Aggregate stats from Signal table (fast + consistent) ---
+    provider_ids = [p.id for p in providers]
+    stats_by_provider: Dict[str, dict] = {}
+    if provider_ids:
+        # total_signals, last_signal_at, profit_sum, wins, settled_count
+        rows = db.query(
+            Signal.provider_id.label('provider_id'),
+            func.count(Signal.id).label('total_signals'),
+            func.max(Signal.timestamp).label('last_signal_at'),
+            func.coalesce(func.sum(Signal.profit), 0.0).label('profit'),
+            func.coalesce(func.sum(case((Signal.result == 'WIN', 1), else_=0)), 0).label('wins'),
+            func.coalesce(func.sum(case((Signal.result.in_(['WIN', 'LOSS', 'DRAW']), 1), else_=0)), 0).label('settled_count'),
+        ).filter(
+            Signal.provider_id.in_(provider_ids)
+        ).group_by(Signal.provider_id).all()
+        for r in rows:
+            settled = int(getattr(r, 'settled_count') or 0)
+            wins = int(getattr(r, 'wins') or 0)
+            accuracy = None
+            if settled > 0:
+                accuracy = round((wins / settled) * 100, 2)
+            stats_by_provider[str(r.provider_id)] = {
+                'total_signals': int(getattr(r, 'total_signals') or 0),
+                'last_signal_at': getattr(r, 'last_signal_at').isoformat() if getattr(r, 'last_signal_at') else None,
+                'profit': float(getattr(r, 'profit') or 0.0),
+                'accuracy': accuracy,
+            }
     
     # Enrich with additional data
     result = []
     for provider in providers:
         data = provider.to_dict()
+
+        # Attach computed stats (these drive the UI columns)
+        st = stats_by_provider.get(provider.id, {})
+        data['total_signals'] = st.get('total_signals', 0)
+        data['last_signal_at'] = st.get('last_signal_at')
+        # UI expects numeric-ish values; keep None if unknown
+        data['profit'] = st.get('profit', 0.0)
+        data['accuracy'] = st.get('accuracy')
         
         # Add subscription status
         if subscribed:
@@ -716,6 +759,42 @@ async def get_signal_history(
     }
 
 
+@app.post("/api/v1/providers/{provider_id}/signals/{signal_id}/result")
+async def report_signal_result(
+    provider_id: str,
+    signal_id: str,
+    body: SignalResultReportRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Provider reports signal outcome (owner only)."""
+    provider = db.query(Provider).filter(
+        Provider.id == provider_id,
+        Provider.owner_id == current_user.id
+    ).first()
+    if not provider:
+        raise HTTPException(status_code=404, detail="Provider not found or not authorized")
+
+    sig = db.query(Signal).filter(
+        Signal.id == signal_id,
+        Signal.provider_id == provider_id
+    ).first()
+    if not sig:
+        raise HTTPException(status_code=404, detail="Signal not found")
+
+    res = (body.result or "").strip().upper()
+    if res not in ("WIN", "LOSS", "DRAW"):
+        raise HTTPException(status_code=400, detail="Invalid result; must be WIN/LOSS/DRAW")
+
+    sig.result = res
+    sig.profit = body.profit
+    sig.closed_at = body.closed_at or datetime.utcnow()
+    db.commit()
+    db.refresh(sig)
+
+    return {"status": "success", "signal": sig.to_dict()}
+
+
 # ============================================================
 # WEBSOCKET ENDPOINTS
 # ============================================================
@@ -753,6 +832,7 @@ async def provider_websocket(websocket: WebSocket, provider_id: str):
                 logger.info(f"Signal from provider {provider_id}: {signal_data}")
                 
                 # Save signal to database
+                signal_id = None
                 try:
                     db = get_db_session(engine)
                     asset = signal_data.get('asset', 'UNKNOWN')
@@ -769,9 +849,22 @@ async def provider_websocket(websocket: WebSocket, provider_id: str):
                     )
                     db.add(signal)
                     db.commit()
+                    db.refresh(signal)
+                    signal_id = signal.id
                     db.close()
                 except Exception as e:
                     logger.error(f"Error saving signal: {e}")
+
+                # Acknowledge provider with the created signal id (lets provider report results later)
+                try:
+                    await websocket.send_json({
+                        "action": "signalSent",
+                        "providerId": provider_id,
+                        "signalId": signal_id,
+                        "server_timestamp": datetime.utcnow().isoformat()
+                    })
+                except Exception:
+                    pass
     
     except WebSocketDisconnect:
         ws_manager.disconnect_provider(websocket, provider_id)
