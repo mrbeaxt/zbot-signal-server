@@ -40,6 +40,7 @@ from signal_server_models import (
 class RegisterRequest(BaseModel):
     email: str
     name: str
+    user_type: Optional[str] = None  # 'provider' or 'subscriber'
 
 
 class ProviderCreateRequest(BaseModel):
@@ -235,11 +236,16 @@ async def register_user(
     # Accept data from either query params or JSON body
     user_email = email or (body.email if body else None)
     user_name = name or (body.name if body else None)
+    user_type = (body.user_type if body else None)
     
     if not user_email or not user_name:
         raise HTTPException(status_code=400, detail="Email and name are required")
     
-    logger.info(f"Registration request: email={user_email}, name={user_name}")
+    # Normalize user_type
+    if user_type not in ('provider', 'subscriber'):
+        user_type = None
+    
+    logger.info(f"Registration request: email={user_email}, name={user_name}, type={user_type}")
     
     # Check if user exists
     existing_user = db.query(User).filter(User.email == user_email).first()
@@ -249,7 +255,8 @@ async def register_user(
             "status": "success",
             "user_id": existing_user.id,
             "access_token": existing_user.access_token,
-            "email": existing_user.email
+            "email": existing_user.email,
+            "user_type": existing_user.user_type
         }
     
     # Create new user
@@ -257,7 +264,8 @@ async def register_user(
         id=str(uuid.uuid4()),
         email=user_email,
         name=user_name,
-        access_token=str(uuid.uuid4())
+        access_token=str(uuid.uuid4()),
+        user_type=user_type
     )
     
     db.add(new_user)
@@ -276,14 +284,109 @@ async def register_user(
 
 @app.get("/api/v1/auth/me")
 async def get_user_info(current_user: User = Depends(get_current_user)):
-    """Get current user information"""
+    """Get current user information (includes access token for recovery)"""
     return {
         "status": "success",
         "user": {
             "id": current_user.id,
             "email": current_user.email,
             "name": current_user.name,
+            "access_token": current_user.access_token,
+            "user_type": current_user.user_type,
             "created_at": current_user.created_at.isoformat()
+        }
+    }
+
+
+class UpdateUserRequest(BaseModel):
+    name: Optional[str] = None
+    user_type: Optional[str] = None
+
+
+@app.put("/api/v1/auth/me")
+async def update_user_info(
+    body: UpdateUserRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Update current user profile"""
+    if body.name and body.name.strip():
+        current_user.name = body.name.strip()
+    if body.user_type in ('provider', 'subscriber'):
+        current_user.user_type = body.user_type
+    db.commit()
+    db.refresh(current_user)
+    return {
+        "status": "success",
+        "user": {
+            "id": current_user.id,
+            "email": current_user.email,
+            "name": current_user.name,
+            "access_token": current_user.access_token,
+            "user_type": current_user.user_type,
+            "created_at": current_user.created_at.isoformat()
+        }
+    }
+
+
+# ============================================================
+# DASHBOARD STATS ENDPOINT
+# ============================================================
+
+@app.get("/api/v1/dashboard/stats")
+async def get_dashboard_stats(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Get aggregated dashboard stats for the current user"""
+    # Count own providers
+    own_providers = db.query(Provider).filter(
+        Provider.owner_id == current_user.id,
+        Provider.is_active == True
+    ).count()
+    
+    # Count active subscriptions (as subscriber)
+    active_subscriptions = db.query(Subscription).filter(
+        Subscription.user_id == current_user.id,
+        Subscription.is_active == True
+    ).count()
+    
+    # Count pending requests for user's providers
+    own_provider_ids = [p.id for p in db.query(Provider.id).filter(
+        Provider.owner_id == current_user.id, Provider.is_active == True
+    ).all()]
+    
+    pending_requests = 0
+    total_subscribers = 0
+    if own_provider_ids:
+        pending_requests = db.query(SubscriptionRequest).filter(
+            SubscriptionRequest.provider_id.in_(own_provider_ids),
+            SubscriptionRequest.status == 'pending'
+        ).count()
+        total_subscribers = db.query(Subscription).filter(
+            Subscription.provider_id.in_(own_provider_ids),
+            Subscription.is_active == True
+        ).count()
+    
+    # Count available providers (not owned, not subscribed)
+    subscribed_provider_ids = [s.provider_id for s in db.query(Subscription.provider_id).filter(
+        Subscription.user_id == current_user.id, Subscription.is_active == True
+    ).all()]
+    
+    available_providers = db.query(Provider).filter(
+        Provider.is_active == True,
+        Provider.owner_id != current_user.id,
+        ~Provider.id.in_(subscribed_provider_ids) if subscribed_provider_ids else True
+    ).count()
+    
+    return {
+        "status": "success",
+        "stats": {
+            "own_providers": own_providers,
+            "active_subscriptions": active_subscriptions,
+            "pending_requests": pending_requests,
+            "total_subscribers": total_subscribers,
+            "available_providers": available_providers
         }
     }
 
@@ -477,6 +580,46 @@ async def delete_provider(
     return {
         "status": "success",
         "message": "Provider deleted successfully"
+    }
+
+
+@app.post("/api/v1/providers/{provider_id}/reset-history")
+async def reset_provider_history(
+    provider_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Reset all trading history for a provider — deletes signals and trades (owner only)"""
+    provider = db.query(Provider).filter(
+        Provider.id == provider_id,
+        Provider.owner_id == current_user.id,
+        Provider.is_active == True
+    ).first()
+    
+    if not provider:
+        raise HTTPException(status_code=404, detail="Provider not found or not authorized")
+    
+    # Count before deletion
+    signals_count = db.query(Signal).filter(Signal.provider_id == provider_id).count()
+    trades_count = db.query(ProviderTrade).filter(ProviderTrade.provider_id == provider_id).count()
+    
+    # Delete all signals
+    db.query(Signal).filter(Signal.provider_id == provider_id).delete()
+    
+    # Delete all trades
+    db.query(ProviderTrade).filter(ProviderTrade.provider_id == provider_id).delete()
+    
+    db.commit()
+    
+    logger.info(f"🔄 History reset for provider {provider.name}: {signals_count} signals + {trades_count} trades deleted")
+    
+    return {
+        "status": "success",
+        "message": f"History reset successfully",
+        "deleted": {
+            "signals": signals_count,
+            "trades": trades_count
+        }
     }
 
 
