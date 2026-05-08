@@ -3,7 +3,7 @@ Database Models for Z-BOT Signal Server
 Uses SQLAlchemy with PostgreSQL (Free on Render)
 """
 
-from sqlalchemy import create_engine, Column, String, Integer, Boolean, DateTime, ForeignKey, Text
+from sqlalchemy import create_engine, Column, String, Integer, Boolean, DateTime, ForeignKey, Text, Float
 from sqlalchemy.orm import declarative_base, relationship, sessionmaker
 from datetime import datetime
 import uuid
@@ -134,6 +134,10 @@ class Signal(Base):
     duration = Column(Integer, nullable=False)  # minutes
     brokers = Column(String, default='')  # JSON string
     timestamp = Column(DateTime, default=datetime.utcnow)
+    # Outcome fields (filled later by provider/subscriber report)
+    result = Column(String, nullable=True)  # WIN / LOSS / DRAW
+    profit = Column(Float, nullable=True)   # net profit (can be negative)
+    closed_at = Column(DateTime, nullable=True)
     
     # Relationship
     provider = relationship('Provider', back_populates='signals')
@@ -146,7 +150,10 @@ class Signal(Base):
             'direction': self.direction,
             'duration': self.duration,
             'brokers': self.brokers,
-            'timestamp': self.timestamp.isoformat()
+            'timestamp': self.timestamp.isoformat(),
+            'result': self.result,
+            'profit': self.profit,
+            'closed_at': self.closed_at.isoformat() if self.closed_at else None
         }
 
 
@@ -163,5 +170,29 @@ def get_db_session(engine):
 
 
 def init_db(engine):
-    """Create all tables"""
+    """Create all tables + lightweight schema migration for new columns."""
     Base.metadata.create_all(engine)
+
+    # Auto-migrate existing installs (SQLite/Postgres) without Alembic.
+    # This keeps older deployments working when we add new columns.
+    try:
+        from sqlalchemy import inspect, text
+        insp = inspect(engine)
+        if not insp.has_table('signals'):
+            return
+        existing_cols = {c['name'] for c in insp.get_columns('signals')}
+        alters = []
+        if 'result' not in existing_cols:
+            alters.append("ALTER TABLE signals ADD COLUMN result VARCHAR(16)")
+        if 'profit' not in existing_cols:
+            alters.append("ALTER TABLE signals ADD COLUMN profit FLOAT")
+        if 'closed_at' not in existing_cols:
+            alters.append("ALTER TABLE signals ADD COLUMN closed_at TIMESTAMP")
+        if alters:
+            with engine.begin() as conn:
+                for sql in alters:
+                    conn.execute(text(sql))
+    except Exception:
+        # Safe best-effort migration. If it fails (permissions/dialect),
+        # server still runs; stats will just omit missing fields.
+        pass
