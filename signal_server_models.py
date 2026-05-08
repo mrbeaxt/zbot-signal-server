@@ -204,8 +204,14 @@ class ProviderTrade(Base):
 
 # Database setup
 def get_db_engine(database_url):
-    """Create database engine"""
-    return create_engine(database_url)
+    """Create database engine with connection health checks for Render free tier."""
+    return create_engine(
+        database_url,
+        pool_pre_ping=True,       # Verify connections before use (critical after Render sleep/wake)
+        pool_recycle=300,          # Recycle connections every 5 minutes
+        pool_size=5,               # Limit pool size for free-tier PostgreSQL
+        max_overflow=5
+    )
 
 
 def get_db_session(engine):
