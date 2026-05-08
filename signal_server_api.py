@@ -1,1230 +1,192 @@
-"""
-Complete API Server with Database for Z-BOT Signal Server
-Deploy on Render.com with PostgreSQL
-
-Features:
-- User authentication via access tokens
-- Provider CRUD operations
-- Subscription management
-- Request/approval workflow
-- Signal history
-- WebSocket integration for real-time signals
-"""
+# Decompiled with PyLingual (https://pylingual.io)
+# Internal filename: manager\signal_provider.py
+# Bytecode version: 3.10.0rc2 (3439)
+# Source timestamp: 1970-01-01 00:00:00 UTC (0)
 
 import json
 import logging
-import os
-from datetime import datetime
-from typing import Optional, Dict, Set, List
-from pathlib import Path
-
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Header, Depends, Query, Body
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
-from pydantic import BaseModel, Field
-from sqlalchemy.orm import Session
-from sqlalchemy import func, case
-import uvicorn
-
-from signal_server_models import (
-    Base, User, Provider, Subscription, SubscriptionRequest, Signal, ProviderTrade,
-    get_db_engine, get_db_session, init_db
-)
-
-
-# ============================================================
-# PYDANTIC REQUEST MODELS
-# ============================================================
-
-class RegisterRequest(BaseModel):
-    email: str
-    name: str
-    user_type: Optional[str] = None  # 'provider' or 'subscriber'
-
-
-class ProviderCreateRequest(BaseModel):
-    name: str
-    membership_value: str = "Free"
-    observations: str = ""
-
-
-class ProviderUpdateRequest(BaseModel):
-    name: Optional[str] = None
-    membership_value: Optional[str] = None
-    observations: Optional[str] = None
-
-
-class SubscriptionRequestCreate(BaseModel):
-    email: str
-    contact: str
-
-
-class SubscriptionApproveRequest(BaseModel):
-    real_access: bool = False
-    demo_access: bool = True
-
-
-class SetExpirationRequest(BaseModel):
-    expires_at: datetime
-
-
-class TokenAuthRequest(BaseModel):
-    token: str
-
-
-class SignalResultReportRequest(BaseModel):
-    result: str = Field(..., description="WIN / LOSS / DRAW")
-    profit: Optional[float] = Field(None, description="Net profit (negative for loss)")
-    closed_at: Optional[datetime] = None
-
-
-class ProviderTradeCreateRequest(BaseModel):
-    asset: str
-    direction: str
-    duration: int
-    result: str
-    profit: Optional[float] = None
-    account_type: str = "Demo"
-    broker: str = ""
-    strategy: str = ""
-    opened_at: Optional[datetime] = None
-    closed_at: Optional[datetime] = None
-
-# Setup logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s'
-)
+from time import time
+from typing import Dict, Union
+from threading import Event, Lock
+from websocket import WebSocketApp
+from PySide6.QtCore import QObject, Signal
+from decorators import run_in_thread
+from models import UserInfo
+from config.signal_server_config import SIGNAL_SERVER_URL, get_provider_ws_url, get_subscriber_ws_url
 logger = logging.getLogger(__name__)
 
-# ============================================================
-# WEBSOCKET CONNECTION MANAGER
-# ============================================================
+class SignalProviderManager(QObject):
+    """
+    Manages WebSocket communication with signal providers.
+    Allows joining providers, sending signals, and emitting data via PySide6 signals.
+    """
+    data_received = Signal(dict)
 
-class WebSocketManager:
-    """Manage WebSocket connections with per-provider routing"""
-    def __init__(self):
-        self.provider_connections: Dict[str, Set[WebSocket]] = {}
-        self.subscriber_connections: Dict[WebSocket, Set[str]] = {}  # ws -> {provider_ids}
-    
-    async def connect_provider(self, websocket: WebSocket, provider_id: str):
-        await websocket.accept()
-        if provider_id not in self.provider_connections:
-            self.provider_connections[provider_id] = set()
-        self.provider_connections[provider_id].add(websocket)
-        logger.info(f"Provider {provider_id} connected")
-    
-    async def connect_subscriber(self, websocket: WebSocket):
-        await websocket.accept()
-        self.subscriber_connections[websocket] = set()
-        logger.info("Subscriber connected")
-    
-    def disconnect_provider(self, websocket: WebSocket, provider_id: str):
-        if provider_id in self.provider_connections:
-            self.provider_connections[provider_id].discard(websocket)
-            if not self.provider_connections[provider_id]:
-                del self.provider_connections[provider_id]
-        logger.info(f"Provider {provider_id} disconnected")
-    
-    def disconnect_subscriber(self, websocket: WebSocket):
-        if websocket in self.subscriber_connections:
-            del self.subscriber_connections[websocket]
-        logger.info("Subscriber disconnected")
-    
-    def join_provider(self, websocket: WebSocket, provider_id: str):
-        """Subscriber joins a provider to receive its signals"""
-        if websocket in self.subscriber_connections:
-            self.subscriber_connections[websocket].add(provider_id)
-        logger.info(f"Subscriber joined provider {provider_id}")
-    
-    def leave_provider(self, websocket: WebSocket, provider_id: str):
-        """Subscriber leaves a provider"""
-        if websocket in self.subscriber_connections:
-            self.subscriber_connections[websocket].discard(provider_id)
-        logger.info(f"Subscriber left provider {provider_id}")
-    
-    async def broadcast_to_provider_subscribers(self, provider_id: str, message: str):
-        """Send signal only to subscribers of a specific provider"""
-        disconnected = []
-        for subscriber_ws, provider_ids in self.subscriber_connections.items():
-            if provider_id in provider_ids:
+    def __init__(self, user_info: UserInfo):
+        super().__init__()
+        self.user_info = user_info
+        self.waiter = Event()
+        self.id_name_map = {}
+        self.enabled_provider_ids = set()
+        self.real_access_pids = set()
+        self._lock = Lock()
+        self._running = False
+        self._ws_started = False
+        self.ws = None
+
+    def get_ws(self) -> WebSocketApp:
+        """Get WebSocket connection for subscriber with keepalive ping."""
+        ws_url = get_subscriber_ws_url()
+        logger.debug(f'Connecting to subscriber WebSocket: {ws_url}')
+        return WebSocketApp(
+            url=ws_url,
+            on_open=self.on_open,
+            on_message=self.on_message,
+            on_close=self.on_close,
+            on_error=self.on_error,
+            ping_interval=30,        # Send ping every 30s to keep Render proxy connection alive
+            ping_payload='{"action":"ping"}',
+            ping_timeout=10           # Wait 10s for pong before considering connection dead
+        )
+
+    def add_provider(self, provider_id: str, provider_name: str, real_access: bool=False):
+        """Add a provider to the id_name_map, auto-enable, and join it on WebSocket if connected."""
+        with self._lock:
+            # Store in map regardless of connection state
+            self.id_name_map[provider_id] = provider_name
+            if real_access:
+                self.real_access_pids.add(provider_id)
+            
+            # Auto-enable provider so signals are received immediately
+            self.enabled_provider_ids.add(provider_id)
+            
+            # Join provider if WebSocket is connected
+            if self._ws_started and self.ws and self.ws.sock and self.ws.sock.connected:
+                self._join_provider(provider_id=provider_id)
+
+    def on_open(self, ws: WebSocketApp):
+        """Send join messages when connection opens."""
+        logger.info('WebSocket connection opened.')
+        with self._lock:
+            for provider_id in list(self.id_name_map.keys()):
+                self._join_provider(provider_id=provider_id)
+
+    def on_message(self, ws: WebSocketApp, message: str):
+        """Process received WebSocket messages."""
+        try:
+            parsed_message = json.loads(message)
+            logger.debug(f'Message received: {parsed_message}')
+            if 'action' in parsed_message and parsed_message['action'] == 'sendSignal' and ('providerId' in parsed_message) and (parsed_message['providerId'] in self.enabled_provider_ids) and ('data' in parsed_message):
+                timestamp = int(time())
+                pid = parsed_message['providerId']
+                data = {
+                    'strategy': self.id_name_map.get(pid, 'Unknown'),
+                    'timestamp': timestamp,
+                    'asset': parsed_message['data'].get('asset', 'UNKNOWN'),
+                    'dir': parsed_message['data'].get('direction', 'UNKNOWN'),
+                    'timeframe': parsed_message['data'].get('duration', 0),
+                    'brokers': parsed_message['data'].get('brokers', []),
+                    'real_access': pid in self.real_access_pids
+                }
+                self.data_received.emit(data)
+                logger.debug(f'self.real_access_pids={self.real_access_pids!r}, data={data!r}')
+        except Exception as e:
+            logger.error(f'Error processing WebSocket message: {e}')
+
+    def _join_provider(self, provider_id: str):
+        """Join a provider via WebSocket."""
+        join_message = {'action': 'joinProvider', 'providerId': provider_id}
+        try:
+            if self.ws and self.ws.sock and self.ws.sock.connected:
+                self.ws.send(json.dumps(join_message))
+                logger.info(f'Sent join request for provider ID: {provider_id}')
+        except Exception as e:
+            logger.error(f'Failed to join provider {provider_id}: {e}')
+
+    def disable_provider(self, provider_id: str):
+        """Disable a provider, preventing signal reception."""
+        self.enabled_provider_ids.discard(provider_id)
+        logger.debug(f'Disabled provider: {provider_id}')
+
+    def enable_provider(self, provider_id: str):
+        """Enable a provider, allowing signal reception."""
+        self.enabled_provider_ids.add(provider_id)
+        logger.debug(f'Enabled provider: {provider_id}')
+
+    def send_signal(self, provider_id: str, signal_data: Dict[str, Union[str, int]]):
+        """Send a signal to a specific provider."""
+        if provider_id not in self.id_name_map:
+            logger.debug(f'Provider {provider_id} not in id_name_map, skipping signal.')
+            return
+        signal_message = {'action': 'sendSignal', 'providerId': provider_id, 'data': signal_data}
+        try:
+            if self.ws and self.ws.sock and self.ws.sock.connected:
+                self.ws.send(json.dumps(signal_message))
+                logger.info(f'Sent signal to provider ID {provider_id}: {signal_data}')
+            else:
+                logger.debug(f'WebSocket not connected, signal queued for provider {provider_id}')
+        except Exception as e:
+            logger.error(f'Failed to send signal to provider {provider_id}: {e}')
+
+    @run_in_thread
+    def start(self) -> None:
+        """Start WebSocket connection (non-blocking, only starts once)."""
+        with self._lock:
+            if self._running:
+                logger.debug('WebSocket already running, skipping start.')
+                return
+            self._running = True
+        
+        logger.info('Starting WebSocket connection...')
+        while not self.waiter.wait(10):
+            try:
+                self.ws = self.get_ws()
+                self._ws_started = True
+                self.ws.run_forever()
+            except Exception as e:
+                logger.error(f'WebSocket error: {e}')
+            finally:
+                self._ws_started = False
                 try:
-                    await subscriber_ws.send_text(message)
+                    if self.ws:
+                        self.ws.close()
                 except:
-                    disconnected.append(subscriber_ws)
-        # Clean up disconnected subscribers
-        for ws in disconnected:
-            self.disconnect_subscriber(ws)
-        if disconnected:
-            logger.info(f"Cleaned up {len(disconnected)} disconnected subscribers")
-
-# Global WebSocket manager
-ws_manager = WebSocketManager()
-
-# ============================================================
-# DATABASE SETUP
-# ============================================================
-
-DATABASE_URL = os.environ.get("DATABASE_URL")
-
-if not DATABASE_URL:
-    logger.warning("⚠️ DATABASE_URL not set. Using SQLite for development.")
-    DATABASE_URL = "sqlite:///./zbot_signals.db"
-
-engine = get_db_engine(DATABASE_URL)
-init_db(engine)
-
-def get_db():
-    """Database session dependency for FastAPI (sync generator)"""
-    db = get_db_session(engine)
-    try:
-        yield db
-    finally:
-        db.close()
-
-
-# ============================================================
-# APP SETUP
-# ============================================================
-
-app = FastAPI(title="Z-BOT Signal Server", version="2.0.0")
-
-# Enable CORS
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-
-# ============================================================
-# AUTHENTICATION HELPER
-# ============================================================
-
-def get_current_user(authorization: Optional[str] = Header(None), db: Session = Depends(get_db)) -> User:
-    """Get current user from authorization header"""
-    if not authorization:
-        raise HTTPException(status_code=401, detail="Missing authorization header")
-    
-    # Extract token (format: "Bearer <token>" or just "<token>")
-    token = authorization.replace("Bearer ", "").strip()
-    
-    user = db.query(User).filter(User.access_token == token).first()
-    if not user:
-        raise HTTPException(status_code=401, detail="Invalid access token")
-    
-    return user
-
-
-# ============================================================
-# USER ENDPOINTS
-# ============================================================
-
-@app.post("/api/v1/auth/register")
-async def register_user(
-    email: Optional[str] = Query(None),
-    name: Optional[str] = Query(None),
-    body: Optional[RegisterRequest] = Body(None),
-    db: Session = Depends(get_db)
-):
-    """Register a new user and return access token (supports both query params and JSON body)"""
-    import uuid
-    
-    # Accept data from either query params or JSON body
-    user_email = email or (body.email if body else None)
-    user_name = name or (body.name if body else None)
-    user_type = (body.user_type if body else None)
-    
-    if not user_email or not user_name:
-        raise HTTPException(status_code=400, detail="Email and name are required")
-    
-    # Normalize user_type
-    if user_type not in ('provider', 'subscriber'):
-        user_type = None
-    
-    logger.info(f"Registration request: email={user_email}, name={user_name}, type={user_type}")
-    
-    # Check if user exists
-    existing_user = db.query(User).filter(User.email == user_email).first()
-    if existing_user:
-        logger.info(f"User already exists: {user_email}")
-        return {
-            "status": "success",
-            "user_id": existing_user.id,
-            "access_token": existing_user.access_token,
-            "email": existing_user.email,
-            "user_type": existing_user.user_type
-        }
-    
-    # Create new user
-    new_user = User(
-        id=str(uuid.uuid4()),
-        email=user_email,
-        name=user_name,
-        access_token=str(uuid.uuid4()),
-        user_type=user_type
-    )
-    
-    db.add(new_user)
-    db.commit()
-    db.refresh(new_user)
-    
-    logger.info(f"✅ New user registered: {user_email}")
-    
-    return {
-        "status": "success",
-        "user_id": new_user.id,
-        "access_token": new_user.access_token,
-        "email": new_user.email
-    }
-
-
-@app.get("/api/v1/auth/me")
-async def get_user_info(current_user: User = Depends(get_current_user)):
-    """Get current user information (includes access token for recovery)"""
-    return {
-        "status": "success",
-        "user": {
-            "id": current_user.id,
-            "email": current_user.email,
-            "name": current_user.name,
-            "access_token": current_user.access_token,
-            "user_type": current_user.user_type,
-            "created_at": current_user.created_at.isoformat()
-        }
-    }
-
-
-class UpdateUserRequest(BaseModel):
-    name: Optional[str] = None
-    user_type: Optional[str] = None
-
-
-@app.put("/api/v1/auth/me")
-async def update_user_info(
-    body: UpdateUserRequest,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    """Update current user profile"""
-    if body.name and body.name.strip():
-        current_user.name = body.name.strip()
-    if body.user_type in ('provider', 'subscriber'):
-        current_user.user_type = body.user_type
-    db.commit()
-    db.refresh(current_user)
-    return {
-        "status": "success",
-        "user": {
-            "id": current_user.id,
-            "email": current_user.email,
-            "name": current_user.name,
-            "access_token": current_user.access_token,
-            "user_type": current_user.user_type,
-            "created_at": current_user.created_at.isoformat()
-        }
-    }
-
-
-# ============================================================
-# DASHBOARD STATS ENDPOINT
-# ============================================================
-
-@app.get("/api/v1/dashboard/stats")
-async def get_dashboard_stats(
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    """Get aggregated dashboard stats for the current user"""
-    # Count own providers
-    own_providers = db.query(Provider).filter(
-        Provider.owner_id == current_user.id,
-        Provider.is_active == True
-    ).count()
-    
-    # Count active subscriptions (as subscriber)
-    active_subscriptions = db.query(Subscription).filter(
-        Subscription.user_id == current_user.id,
-        Subscription.is_active == True
-    ).count()
-    
-    # Count pending requests for user's providers
-    own_provider_ids = [p.id for p in db.query(Provider.id).filter(
-        Provider.owner_id == current_user.id, Provider.is_active == True
-    ).all()]
-    
-    pending_requests = 0
-    total_subscribers = 0
-    if own_provider_ids:
-        pending_requests = db.query(SubscriptionRequest).filter(
-            SubscriptionRequest.provider_id.in_(own_provider_ids),
-            SubscriptionRequest.status == 'pending'
-        ).count()
-        total_subscribers = db.query(Subscription).filter(
-            Subscription.provider_id.in_(own_provider_ids),
-            Subscription.is_active == True
-        ).count()
-    
-    # Count available providers (not owned, not subscribed)
-    subscribed_provider_ids = [s.provider_id for s in db.query(Subscription.provider_id).filter(
-        Subscription.user_id == current_user.id, Subscription.is_active == True
-    ).all()]
-    
-    available_providers = db.query(Provider).filter(
-        Provider.is_active == True,
-        Provider.owner_id != current_user.id,
-        ~Provider.id.in_(subscribed_provider_ids) if subscribed_provider_ids else True
-    ).count()
-    
-    return {
-        "status": "success",
-        "stats": {
-            "own_providers": own_providers,
-            "active_subscriptions": active_subscriptions,
-            "pending_requests": pending_requests,
-            "total_subscribers": total_subscribers,
-            "available_providers": available_providers
-        }
-    }
-
-
-# ============================================================
-# PROVIDER ENDPOINTS
-# ============================================================
-
-@app.post("/api/v1/providers")
-async def create_provider(
-    body: ProviderCreateRequest,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    """Create a new signal provider"""
-    import uuid
-    
-    provider = Provider(
-        id=str(uuid.uuid4()),
-        owner_id=current_user.id,
-        name=body.name,
-        membership_value=body.membership_value,
-        observations=body.observations
-    )
-    
-    db.add(provider)
-    db.commit()
-    db.refresh(provider)
-    
-    logger.info(f"✅ Provider created: {body.name} by {current_user.email}")
-    
-    return {
-        "status": "success",
-        "provider": provider.to_dict()
-    }
-
-
-@app.get("/api/v1/providers")
-async def list_providers(
-    subscribed: bool = False,
-    is_owner: bool = False,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    """List providers based on filters"""
-    query = db.query(Provider)
-    
-    if is_owner:
-        # Show user's own providers
-        query = query.filter(Provider.owner_id == current_user.id)
-    elif subscribed:
-        # Show providers user is subscribed to
-        subscriptions = db.query(Subscription).filter(
-            Subscription.user_id == current_user.id,
-            Subscription.is_active == True
-        ).all()
-        
-        provider_ids = [sub.provider_id for sub in subscriptions]
-        query = query.filter(Provider.id.in_(provider_ids))
-    
-    # Only show active providers
-    query = query.filter(Provider.is_active == True)
-    
-    providers = query.all()
-
-    # --- Aggregate stats from ProviderTrade (private performance) ---
-    provider_ids = [p.id for p in providers]
-    stats_by_provider: Dict[str, dict] = {}
-    if provider_ids:
-        rows = db.query(
-            ProviderTrade.provider_id.label('provider_id'),
-            func.count(ProviderTrade.id).label('total_trades'),
-            func.max(ProviderTrade.closed_at).label('last_trade_at'),
-            func.coalesce(func.sum(ProviderTrade.profit), 0.0).label('profit'),
-            func.coalesce(func.sum(case((ProviderTrade.result == 'WIN', 1), else_=0)), 0).label('wins'),
-            func.coalesce(func.sum(case((ProviderTrade.result.in_(['WIN', 'LOSS', 'DRAW']), 1), else_=0)), 0).label('settled_count'),
-        ).filter(
-            ProviderTrade.provider_id.in_(provider_ids)
-        ).group_by(ProviderTrade.provider_id).all()
-        for r in rows:
-            settled = int(getattr(r, 'settled_count') or 0)
-            wins = int(getattr(r, 'wins') or 0)
-            accuracy = None
-            if settled > 0:
-                accuracy = round((wins / settled) * 100, 2)
-            stats_by_provider[str(r.provider_id)] = {
-                'total_signals': int(getattr(r, 'total_trades') or 0),
-                'last_signal_at': getattr(r, 'last_trade_at').isoformat() if getattr(r, 'last_trade_at') else None,
-                'profit': float(getattr(r, 'profit') or 0.0),
-                'accuracy': accuracy,
-            }
-    
-    # Enrich with additional data
-    result = []
-    for provider in providers:
-        data = provider.to_dict()
-
-        # Attach computed stats (these drive the UI columns)
-        st = stats_by_provider.get(provider.id, {})
-        data['total_signals'] = st.get('total_signals', 0)
-        data['last_signal_at'] = st.get('last_signal_at')
-        # UI expects numeric-ish values; keep None if unknown
-        data['profit'] = st.get('profit', 0.0)
-        data['accuracy'] = st.get('accuracy')
-        
-        # Add subscription status
-        if subscribed:
-            subscription = db.query(Subscription).filter(
-                Subscription.user_id == current_user.id,
-                Subscription.provider_id == provider.id,
-                Subscription.is_active == True
-            ).first()
-            if subscription:
-                data['subscription_id'] = subscription.id
-                data['real_access'] = subscription.real_access
-                data['demo_access'] = subscription.demo_access
-                data['expires_at'] = subscription.expires_at.isoformat() if subscription.expires_at else None
-        
-        # Add request status
-        if not subscribed and not is_owner:
-            request = db.query(SubscriptionRequest).filter(
-                SubscriptionRequest.user_id == current_user.id,
-                SubscriptionRequest.provider_id == provider.id,
-                SubscriptionRequest.status == 'pending'
-            ).first()
-            data['subscription_requested'] = request is not None
-        
-        result.append(data)
-    
-    return {
-        "status": "success",
-        "providers": result,
-        "count": len(result)
-    }
-
-
-@app.put("/api/v1/providers/{provider_id}")
-async def update_provider(
-    provider_id: str,
-    body: ProviderUpdateRequest,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    """Update a provider (owner only)"""
-    provider = db.query(Provider).filter(
-        Provider.id == provider_id,
-        Provider.owner_id == current_user.id
-    ).first()
-    
-    if not provider:
-        raise HTTPException(status_code=404, detail="Provider not found")
-    
-    if body.name:
-        provider.name = body.name
-    if body.membership_value:
-        provider.membership_value = body.membership_value
-    if body.observations:
-        provider.observations = body.observations
-    
-    db.commit()
-    db.refresh(provider)
-    
-    logger.info(f"✅ Provider updated: {provider.name}")
-    
-    return {
-        "status": "success",
-        "provider": provider.to_dict()
-    }
-
-
-@app.delete("/api/v1/providers/{provider_id}")
-async def delete_provider(
-    provider_id: str,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    """Delete a provider (owner only)"""
-    provider = db.query(Provider).filter(
-        Provider.id == provider_id,
-        Provider.owner_id == current_user.id
-    ).first()
-    
-    if not provider:
-        raise HTTPException(status_code=404, detail="Provider not found")
-    
-    provider.is_active = False
-    db.commit()
-    
-    logger.info(f"✅ Provider deleted: {provider.name}")
-    
-    return {
-        "status": "success",
-        "message": "Provider deleted successfully"
-    }
-
-
-@app.post("/api/v1/providers/{provider_id}/reset-history")
-async def reset_provider_history(
-    provider_id: str,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    """Reset all trading history for a provider — deletes signals and trades (owner only)"""
-    provider = db.query(Provider).filter(
-        Provider.id == provider_id,
-        Provider.owner_id == current_user.id,
-        Provider.is_active == True
-    ).first()
-    
-    if not provider:
-        raise HTTPException(status_code=404, detail="Provider not found or not authorized")
-    
-    # Count before deletion
-    signals_count = db.query(Signal).filter(Signal.provider_id == provider_id).count()
-    trades_count = db.query(ProviderTrade).filter(ProviderTrade.provider_id == provider_id).count()
-    
-    # Delete all signals
-    db.query(Signal).filter(Signal.provider_id == provider_id).delete()
-    
-    # Delete all trades
-    db.query(ProviderTrade).filter(ProviderTrade.provider_id == provider_id).delete()
-    
-    db.commit()
-    
-    logger.info(f"🔄 History reset for provider {provider.name}: {signals_count} signals + {trades_count} trades deleted")
-    
-    return {
-        "status": "success",
-        "message": f"History reset successfully",
-        "deleted": {
-            "signals": signals_count,
-            "trades": trades_count
-        }
-    }
-
-
-# ============================================================
-# SUBSCRIPTION REQUEST ENDPOINTS
-# ============================================================
-
-@app.post("/api/v1/providers/{provider_id}/requests")
-async def request_subscription(
-    provider_id: str,
-    body: SubscriptionRequestCreate,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    """Request subscription to a provider"""
-    import uuid
-    
-    # Check if provider exists
-    provider = db.query(Provider).filter(Provider.id == provider_id).first()
-    if not provider:
-        raise HTTPException(status_code=404, detail="Provider not found")
-    
-    # Check if already requested
-    existing_request = db.query(SubscriptionRequest).filter(
-        SubscriptionRequest.user_id == current_user.id,
-        SubscriptionRequest.provider_id == provider_id,
-        SubscriptionRequest.status == 'pending'
-    ).first()
-    
-    if existing_request:
-        return {
-            "status": "success",
-            "message": "Subscription request already pending"
-        }
-    
-    # Create request
-    request = SubscriptionRequest(
-        id=str(uuid.uuid4()),
-        user_id=current_user.id,
-        provider_id=provider_id,
-        contact=body.contact,
-        status='pending'
-    )
-    
-    db.add(request)
-    db.commit()
-    db.refresh(request)
-    
-    logger.info(f"📥 Subscription request: {current_user.email} -> {provider.name}")
-    
-    return {
-        "status": "success",
-        "request": request.to_dict()
-    }
-
-
-@app.get("/api/v1/providers/{provider_id}/requests")
-async def get_subscription_requests(
-    provider_id: str,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    """Get subscription requests for a provider (owner only)"""
-    provider = db.query(Provider).filter(
-        Provider.id == provider_id,
-        Provider.owner_id == current_user.id
-    ).first()
-    
-    if not provider:
-        raise HTTPException(status_code=404, detail="Provider not found or not authorized")
-    
-    requests = db.query(SubscriptionRequest).filter(
-        SubscriptionRequest.provider_id == provider_id,
-        SubscriptionRequest.status == 'pending'
-    ).all()
-    
-    return {
-        "status": "success",
-        "requests": [req.to_dict() for req in requests],
-        "count": len(requests)
-    }
-
-
-@app.post("/api/v1/providers/{provider_id}/requests/{request_id}/approve")
-async def approve_subscription_request(
-    provider_id: str,
-    request_id: str,
-    body: SubscriptionApproveRequest = SubscriptionApproveRequest(),
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    """Approve a subscription request"""
-    import uuid
-    from datetime import timedelta
-    
-    # Verify provider ownership
-    provider = db.query(Provider).filter(
-        Provider.id == provider_id,
-        Provider.owner_id == current_user.id
-    ).first()
-    
-    if not provider:
-        raise HTTPException(status_code=404, detail="Provider not found or not authorized")
-    
-    # Get request
-    request = db.query(SubscriptionRequest).filter(
-        SubscriptionRequest.id == request_id,
-        SubscriptionRequest.provider_id == provider_id
-    ).first()
-    
-    if not request:
-        raise HTTPException(status_code=404, detail="Request not found")
-    
-    # Update request status
-    request.status = 'approved'
-    
-    # Create subscription
-    subscription = Subscription(
-        id=str(uuid.uuid4()),
-        user_id=request.user_id,
-        provider_id=provider_id,
-        contact=request.contact,
-        real_access=body.real_access,
-        demo_access=body.demo_access,
-        expires_at=datetime.utcnow() + timedelta(days=30)  # Default 30 days
-    )
-    
-    db.add(subscription)
-    db.commit()
-    
-    logger.info(f"✅ Subscription approved: {request.user_email} -> {provider.name}")
-    
-    return {
-        "status": "success",
-        "message": "Subscription approved",
-        "subscription": subscription.to_dict()
-    }
-
-
-@app.post("/api/v1/providers/{provider_id}/requests/{request_id}/reject")
-async def reject_subscription_request(
-    provider_id: str,
-    request_id: str,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    """Reject a subscription request"""
-    provider = db.query(Provider).filter(
-        Provider.id == provider_id,
-        Provider.owner_id == current_user.id
-    ).first()
-    
-    if not provider:
-        raise HTTPException(status_code=404, detail="Provider not found or not authorized")
-    
-    request = db.query(SubscriptionRequest).filter(
-        SubscriptionRequest.id == request_id,
-        SubscriptionRequest.provider_id == provider_id
-    ).first()
-    
-    if not request:
-        raise HTTPException(status_code=404, detail="Request not found")
-    
-    request.status = 'rejected'
-    db.commit()
-    
-    logger.info(f"❌ Subscription rejected: {request.user_email} -> {provider.name}")
-    
-    return {
-        "status": "success",
-        "message": "Subscription request rejected"
-    }
-
-
-# ============================================================
-# SUBSCRIPTION ENDPOINTS
-# ============================================================
-
-@app.get("/api/v1/providers/{provider_id}/subscriptions")
-async def get_subscriptions(
-    provider_id: str,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    """Get all active subscriptions for a provider (owner only)"""
-    provider = db.query(Provider).filter(
-        Provider.id == provider_id,
-        Provider.owner_id == current_user.id
-    ).first()
-    
-    if not provider:
-        raise HTTPException(status_code=404, detail="Provider not found or not authorized")
-    
-    subscriptions = db.query(Subscription).filter(
-        Subscription.provider_id == provider_id,
-        Subscription.is_active == True
-    ).all()
-    
-    return {
-        "status": "success",
-        "subscriptions": [sub.to_dict() for sub in subscriptions],
-        "count": len(subscriptions)
-    }
-
-
-@app.post("/api/v1/providers/{provider_id}/subscriptions/{subscription_id}/unsubscribe")
-async def unsubscribe(
-    provider_id: str,
-    subscription_id: str,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    """Unsubscribe from a provider"""
-    subscription = db.query(Subscription).filter(
-        Subscription.id == subscription_id,
-        Subscription.user_id == current_user.id,
-        Subscription.provider_id == provider_id
-    ).first()
-    
-    if not subscription:
-        raise HTTPException(status_code=404, detail="Subscription not found")
-    
-    subscription.is_active = False
-    db.commit()
-    
-    logger.info(f"📤 Unsubscribed: {current_user.email} from provider {provider_id}")
-    
-    return {
-        "status": "success",
-        "message": "Successfully unsubscribed"
-    }
-
-
-@app.post("/api/v1/providers/{provider_id}/subscriptions/{subscription_id}/set-expiration")
-async def set_subscription_expiration(
-    provider_id: str,
-    subscription_id: str,
-    body: SetExpirationRequest,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    """Set subscription expiration date (owner only)"""
-    provider = db.query(Provider).filter(
-        Provider.id == provider_id,
-        Provider.owner_id == current_user.id
-    ).first()
-    
-    if not provider:
-        raise HTTPException(status_code=404, detail="Provider not found or not authorized")
-    
-    subscription = db.query(Subscription).filter(
-        Subscription.id == subscription_id,
-        Subscription.provider_id == provider_id
-    ).first()
-    
-    if not subscription:
-        raise HTTPException(status_code=404, detail="Subscription not found")
-    
-    subscription.expires_at = body.expires_at
-    db.commit()
-    
-    logger.info(f"⏰ Expiration set for subscription {subscription_id}: {body.expires_at}")
-    
-    return {
-        "status": "success",
-        "message": "Expiration date updated",
-        "expires_at": body.expires_at.isoformat()
-    }
-
-
-# ============================================================
-# SIGNAL HISTORY ENDPOINTS
-# ============================================================
-
-@app.get("/api/v1/signals/{provider_id}")
-async def get_signal_history(
-    provider_id: str,
-    limit: int = 50,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    """Get recent signal history for a provider"""
-    signals = db.query(Signal).filter(
-        Signal.provider_id == provider_id
-    ).order_by(Signal.timestamp.desc()).limit(limit).all()
-    
-    return {
-        "status": "success",
-        "providerId": provider_id,
-        "signals": [s.to_dict() for s in signals],
-        "count": len(signals)
-    }
-
-
-@app.post("/api/v1/providers/{provider_id}/trades")
-async def create_provider_trade(
-    provider_id: str,
-    body: ProviderTradeCreateRequest,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    """Create a private performance trade record (owner only)."""
-    provider = db.query(Provider).filter(
-        Provider.id == provider_id,
-        Provider.owner_id == current_user.id
-    ).first()
-    if not provider:
-        raise HTTPException(status_code=404, detail="Provider not found or not authorized")
-
-    res = (body.result or "").strip().upper()
-    if res not in ("WIN", "LOSS", "DRAW"):
-        raise HTTPException(status_code=400, detail="Invalid result; must be WIN/LOSS/DRAW")
-
-    trade = ProviderTrade(
-        provider_id=provider_id,
-        asset=(body.asset or "UNKNOWN").strip(),
-        direction=(body.direction or "UNKNOWN").strip().upper(),
-        duration=int(body.duration or 0),
-        account_type=(body.account_type or "Demo").strip(),
-        broker=(body.broker or "").strip(),
-        strategy=(body.strategy or "").strip(),
-        opened_at=body.opened_at,
-        closed_at=body.closed_at or datetime.utcnow(),
-        result=res,
-        profit=body.profit,
-    )
-    db.add(trade)
-    db.commit()
-    db.refresh(trade)
-    return {"status": "success", "trade": trade.to_dict()}
-
-
-@app.get("/api/v1/providers/{provider_id}/trades")
-async def list_provider_trades(
-    provider_id: str,
-    limit: int = 50,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    """List provider private trades (owner can view; subscribers can later be allowed)."""
-    # For now: require auth (any logged-in user can view), but only if provider exists.
-    provider = db.query(Provider).filter(Provider.id == provider_id, Provider.is_active == True).first()
-    if not provider:
-        raise HTTPException(status_code=404, detail="Provider not found")
-
-    trades = db.query(ProviderTrade).filter(
-        ProviderTrade.provider_id == provider_id
-    ).order_by(ProviderTrade.closed_at.desc()).limit(limit).all()
-    return {"status": "success", "providerId": provider_id, "trades": [t.to_dict() for t in trades], "count": len(trades)}
-
-
-@app.post("/api/v1/providers/{provider_id}/signals/{signal_id}/result")
-async def report_signal_result(
-    provider_id: str,
-    signal_id: str,
-    body: SignalResultReportRequest,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    """Provider reports signal outcome (owner only)."""
-    provider = db.query(Provider).filter(
-        Provider.id == provider_id,
-        Provider.owner_id == current_user.id
-    ).first()
-    if not provider:
-        raise HTTPException(status_code=404, detail="Provider not found or not authorized")
-
-    sig = db.query(Signal).filter(
-        Signal.id == signal_id,
-        Signal.provider_id == provider_id
-    ).first()
-    if not sig:
-        raise HTTPException(status_code=404, detail="Signal not found")
-
-    res = (body.result or "").strip().upper()
-    if res not in ("WIN", "LOSS", "DRAW"):
-        raise HTTPException(status_code=400, detail="Invalid result; must be WIN/LOSS/DRAW")
-
-    sig.result = res
-    sig.profit = body.profit
-    sig.closed_at = body.closed_at or datetime.utcnow()
-    db.commit()
-    db.refresh(sig)
-
-    return {"status": "success", "signal": sig.to_dict()}
-
-
-# ============================================================
-# WEBSOCKET ENDPOINTS
-# ============================================================
-
-@app.websocket("/ws/provider/{provider_id}")
-async def provider_websocket(websocket: WebSocket, provider_id: str):
-    """WebSocket endpoint for signal providers"""
-    await ws_manager.connect_provider(websocket, provider_id)
-    
-    try:
-        # Send connection confirmation
-        await websocket.send_json({
-            "action": "connected",
-            "message": f"Successfully connected as provider {provider_id}"
-        })
-        
-        # Listen for signals from provider
-        while True:
-            data = await websocket.receive_text()
-            message = json.loads(data)
-            
-            if message.get("action") == "sendSignal":
-                signal_data = message.get("data", {})
-                
-                # Broadcast to subscribers of THIS provider only
-                await ws_manager.broadcast_to_provider_subscribers(
-                    provider_id,
-                    json.dumps({
-                        "action": "sendSignal",
-                        "providerId": provider_id,
-                        "data": signal_data
-                    })
-                )
-                
-                logger.info(f"Signal from provider {provider_id}: {signal_data}")
-                
-                # Save signal to database
-                signal_id = None
-                try:
-                    db = get_db_session(engine)
-                    asset = signal_data.get('asset', 'UNKNOWN')
-                    direction = signal_data.get('direction', 'UNKNOWN')
-                    duration = int(signal_data.get('duration', 0))
-                    brokers = json.dumps(signal_data.get('brokers', []))
-                    signal = Signal(
-                        provider_id=provider_id,
-                        asset=asset,
-                        direction=direction,
-                        duration=duration,
-                        brokers=brokers,
-                        timestamp=datetime.utcnow()
-                    )
-                    db.add(signal)
-                    db.commit()
-                    db.refresh(signal)
-                    signal_id = signal.id
-                    db.close()
-                except Exception as e:
-                    logger.error(f"Error saving signal: {e}")
-
-                # Acknowledge provider with the created signal id (lets provider report results later)
-                try:
-                    await websocket.send_json({
-                        "action": "signalSent",
-                        "providerId": provider_id,
-                        "signalId": signal_id,
-                        "server_timestamp": datetime.utcnow().isoformat()
-                    })
-                except Exception:
                     pass
-    
-    except WebSocketDisconnect:
-        ws_manager.disconnect_provider(websocket, provider_id)
-    except Exception as e:
-        logger.error(f"Provider WebSocket error: {e}")
-        ws_manager.disconnect_provider(websocket, provider_id)
+        self._running = False
+        self.waiter.clear()
 
+    def on_close(self, ws: WebSocketApp, close_status_code: int, close_msg: str):
+        """
+        Handle WebSocket disconnection — force reconnection loop to rebuild.
+        """
+        logger.warning(f'WebSocket closed (code={close_status_code}): {close_msg}')
+        with self._lock:
+            self._ws_started = False
+        # Force run_forever() to return by ensuring no lingering state
+        try:
+            if self.ws:
+                self.ws.keep_running = False
+        except Exception:
+            pass
 
-@app.websocket("/ws/subscriber")
-async def subscriber_websocket(websocket: WebSocket):
-    """WebSocket endpoint for signal subscribers"""
-    await ws_manager.connect_subscriber(websocket)
-    
-    try:
-        # Send connection confirmation
-        await websocket.send_json({
-            "action": "connected",
-            "message": "Successfully connected as subscriber"
-        })
-        
-        # Listen for commands from subscriber
-        while True:
-            data = await websocket.receive_text()
-            message = json.loads(data)
-            
-            if message.get("action") == "joinProvider":
-                provider_id = message.get("providerId")
-                if provider_id:
-                    ws_manager.join_provider(websocket, provider_id)
-                    await websocket.send_json({
-                        "action": "joinedProvider",
-                        "providerId": provider_id,
-                        "message": f"Joined provider {provider_id}"
-                    })
-            
-            elif message.get("action") == "leaveProvider":
-                provider_id = message.get("providerId")
-                if provider_id:
-                    ws_manager.leave_provider(websocket, provider_id)
-                    await websocket.send_json({
-                        "action": "leftProvider",
-                        "providerId": provider_id,
-                        "message": f"Left provider {provider_id}"
-                    })
-            
-            elif message.get("action") == "ping":
-                await websocket.send_json({"action": "pong"})
-            
-            elif message.get("action") == "sendSignal":
-                provider_id = message.get("providerId")
-                signal_data = message.get("data", {})
-                
-                if provider_id and signal_data:
-                    # Broadcast to all subscribers of this provider
-                    await ws_manager.broadcast_to_provider_subscribers(
-                        provider_id,
-                        json.dumps({
-                            "action": "sendSignal",
-                            "providerId": provider_id,
-                            "data": signal_data
-                        })
-                    )
-                    
-                    logger.info(f"Signal relayed from subscriber WebSocket: provider={provider_id}, asset={signal_data.get('asset')}")
-                    
-                    # Save signal to database
-                    try:
-                        db = get_db_session(engine)
-                        asset = signal_data.get('asset', 'UNKNOWN')
-                        direction = signal_data.get('direction', 'UNKNOWN')
-                        duration = int(signal_data.get('duration', 0))
-                        brokers = json.dumps(signal_data.get('brokers', []))
-                        signal = Signal(
-                            provider_id=provider_id,
-                            asset=asset,
-                            direction=direction,
-                            duration=duration,
-                            brokers=brokers,
-                            timestamp=datetime.utcnow()
-                        )
-                        db.add(signal)
-                        db.commit()
-                        db.close()
-                    except Exception as e:
-                        logger.error(f"Error saving signal: {e}")
-    
-    except WebSocketDisconnect:
-        ws_manager.disconnect_subscriber(websocket)
-    except Exception as e:
-        logger.error(f"Subscriber WebSocket error: {e}")
-        ws_manager.disconnect_subscriber(websocket)
+    def on_error(self, ws: WebSocketApp, error: Exception):
+        """
+        Handle WebSocket errors — log and let run_forever() handle reconnection.
+        """
+        err_str = str(error)
+        # Suppress noisy connection-refused logs during normal reconnect cycling
+        if 'Connection refused' not in err_str and '10061' not in err_str:
+            logger.error(f'WebSocket error: {error}')
 
-
-# ============================================================
-# HEALTH & INFO ENDPOINTS
-# ============================================================
-
-@app.get("/health")
-async def health_check():
-    """Health check endpoint"""
-    from sqlalchemy import text
-    try:
-        db = get_db_session(engine)
-        db.execute(text("SELECT 1"))
-        db_status = "connected"
-        db.close()
-    except Exception as e:
-        logger.error(f"Database health check failed: {e}")
-        db_status = "disconnected"
-    
-    return {
-        "status": "running",
-        "database": db_status,
-        "version": "2.0.0"
-    }
-
-
-@app.get("/")
-async def root():
-    """Serve web panel"""
-    panel_path = Path(__file__).parent / "web_panel" / "index.html"
-    if panel_path.exists():
-        return FileResponse(str(panel_path))
-    return {
-        "message": "Z-BOT Signal Server with Database",
-        "version": "2.0.0",
-        "docs": "/docs",
-        "panel": "/"
-    }
-
-
-# ============================================================
-# MAIN
-# ============================================================
-
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 8000))
-    
-    logger.info("=" * 60)
-    logger.info("🚀 Z-BOT Signal Server with Database Starting...")
-    logger.info(f"📍 Port: {port}")
-    logger.info(f"📍 Database: {'PostgreSQL' if 'postgresql' in DATABASE_URL else 'SQLite'}")
-    logger.info(f"📍 API Docs: http://localhost:{port}/docs")
-    logger.info("=" * 60)
-    
-    uvicorn.run(
-        "signal_server_api:app",
-        host="0.0.0.0",
-        port=port,
-        log_level="info"
-    )
+    def close(self) -> None:
+        """Close the WebSocket connection safely."""
+        self.waiter.set()
+        with self._lock:
+            self._running = False
+            self._ws_started = False
+        try:
+            if self.ws:
+                self.ws.close()
+        except:
+            pass
+        logger.info('WebSocket connection closed.')
