@@ -28,7 +28,7 @@ from sqlalchemy import func, case
 import uvicorn
 
 from signal_server_models import (
-    Base, User, Provider, Subscription, SubscriptionRequest, Signal,
+    Base, User, Provider, Subscription, SubscriptionRequest, Signal, ProviderTrade,
     get_db_engine, get_db_session, init_db
 )
 
@@ -75,6 +75,19 @@ class TokenAuthRequest(BaseModel):
 class SignalResultReportRequest(BaseModel):
     result: str = Field(..., description="WIN / LOSS / DRAW")
     profit: Optional[float] = Field(None, description="Net profit (negative for loss)")
+    closed_at: Optional[datetime] = None
+
+
+class ProviderTradeCreateRequest(BaseModel):
+    asset: str
+    direction: str
+    duration: int
+    result: str
+    profit: Optional[float] = None
+    account_type: str = "Demo"
+    broker: str = ""
+    strategy: str = ""
+    opened_at: Optional[datetime] = None
     closed_at: Optional[datetime] = None
 
 # Setup logging
@@ -336,21 +349,20 @@ async def list_providers(
     
     providers = query.all()
 
-    # --- Aggregate stats from Signal table (fast + consistent) ---
+    # --- Aggregate stats from ProviderTrade (private performance) ---
     provider_ids = [p.id for p in providers]
     stats_by_provider: Dict[str, dict] = {}
     if provider_ids:
-        # total_signals, last_signal_at, profit_sum, wins, settled_count
         rows = db.query(
-            Signal.provider_id.label('provider_id'),
-            func.count(Signal.id).label('total_signals'),
-            func.max(Signal.timestamp).label('last_signal_at'),
-            func.coalesce(func.sum(Signal.profit), 0.0).label('profit'),
-            func.coalesce(func.sum(case((Signal.result == 'WIN', 1), else_=0)), 0).label('wins'),
-            func.coalesce(func.sum(case((Signal.result.in_(['WIN', 'LOSS', 'DRAW']), 1), else_=0)), 0).label('settled_count'),
+            ProviderTrade.provider_id.label('provider_id'),
+            func.count(ProviderTrade.id).label('total_trades'),
+            func.max(ProviderTrade.closed_at).label('last_trade_at'),
+            func.coalesce(func.sum(ProviderTrade.profit), 0.0).label('profit'),
+            func.coalesce(func.sum(case((ProviderTrade.result == 'WIN', 1), else_=0)), 0).label('wins'),
+            func.coalesce(func.sum(case((ProviderTrade.result.in_(['WIN', 'LOSS', 'DRAW']), 1), else_=0)), 0).label('settled_count'),
         ).filter(
-            Signal.provider_id.in_(provider_ids)
-        ).group_by(Signal.provider_id).all()
+            ProviderTrade.provider_id.in_(provider_ids)
+        ).group_by(ProviderTrade.provider_id).all()
         for r in rows:
             settled = int(getattr(r, 'settled_count') or 0)
             wins = int(getattr(r, 'wins') or 0)
@@ -358,8 +370,8 @@ async def list_providers(
             if settled > 0:
                 accuracy = round((wins / settled) * 100, 2)
             stats_by_provider[str(r.provider_id)] = {
-                'total_signals': int(getattr(r, 'total_signals') or 0),
-                'last_signal_at': getattr(r, 'last_signal_at').isoformat() if getattr(r, 'last_signal_at') else None,
+                'total_signals': int(getattr(r, 'total_trades') or 0),
+                'last_signal_at': getattr(r, 'last_trade_at').isoformat() if getattr(r, 'last_trade_at') else None,
                 'profit': float(getattr(r, 'profit') or 0.0),
                 'accuracy': accuracy,
             }
@@ -757,6 +769,63 @@ async def get_signal_history(
         "signals": [s.to_dict() for s in signals],
         "count": len(signals)
     }
+
+
+@app.post("/api/v1/providers/{provider_id}/trades")
+async def create_provider_trade(
+    provider_id: str,
+    body: ProviderTradeCreateRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Create a private performance trade record (owner only)."""
+    provider = db.query(Provider).filter(
+        Provider.id == provider_id,
+        Provider.owner_id == current_user.id
+    ).first()
+    if not provider:
+        raise HTTPException(status_code=404, detail="Provider not found or not authorized")
+
+    res = (body.result or "").strip().upper()
+    if res not in ("WIN", "LOSS", "DRAW"):
+        raise HTTPException(status_code=400, detail="Invalid result; must be WIN/LOSS/DRAW")
+
+    trade = ProviderTrade(
+        provider_id=provider_id,
+        asset=(body.asset or "UNKNOWN").strip(),
+        direction=(body.direction or "UNKNOWN").strip().upper(),
+        duration=int(body.duration or 0),
+        account_type=(body.account_type or "Demo").strip(),
+        broker=(body.broker or "").strip(),
+        strategy=(body.strategy or "").strip(),
+        opened_at=body.opened_at,
+        closed_at=body.closed_at or datetime.utcnow(),
+        result=res,
+        profit=body.profit,
+    )
+    db.add(trade)
+    db.commit()
+    db.refresh(trade)
+    return {"status": "success", "trade": trade.to_dict()}
+
+
+@app.get("/api/v1/providers/{provider_id}/trades")
+async def list_provider_trades(
+    provider_id: str,
+    limit: int = 50,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """List provider private trades (owner can view; subscribers can later be allowed)."""
+    # For now: require auth (any logged-in user can view), but only if provider exists.
+    provider = db.query(Provider).filter(Provider.id == provider_id, Provider.is_active == True).first()
+    if not provider:
+        raise HTTPException(status_code=404, detail="Provider not found")
+
+    trades = db.query(ProviderTrade).filter(
+        ProviderTrade.provider_id == provider_id
+    ).order_by(ProviderTrade.closed_at.desc()).limit(limit).all()
+    return {"status": "success", "providerId": provider_id, "trades": [t.to_dict() for t in trades], "count": len(trades)}
 
 
 @app.post("/api/v1/providers/{provider_id}/signals/{signal_id}/result")
