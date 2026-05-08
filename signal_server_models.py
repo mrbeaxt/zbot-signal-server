@@ -19,6 +19,7 @@ class User(Base):
     email = Column(String, unique=True, nullable=False, index=True)
     name = Column(String, nullable=False)
     access_token = Column(String, unique=True, nullable=False, index=True)
+    user_type = Column(String, default=None)  # 'provider' or 'subscriber' (null = legacy)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     
@@ -222,6 +223,19 @@ def init_db(engine):
     try:
         from sqlalchemy import inspect, text
         insp = inspect(engine)
+        
+        # Migrate users table
+        if insp.has_table('users'):
+            existing_user_cols = {c['name'] for c in insp.get_columns('users')}
+            user_alters = []
+            if 'user_type' not in existing_user_cols:
+                user_alters.append("ALTER TABLE users ADD COLUMN user_type VARCHAR(16)")
+            if user_alters:
+                with engine.begin() as conn:
+                    for sql in user_alters:
+                        conn.execute(text(sql))
+        
+        # Migrate signals table
         if not insp.has_table('signals'):
             return
         existing_cols = {c['name'] for c in insp.get_columns('signals')}
